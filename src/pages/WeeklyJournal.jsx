@@ -2,12 +2,46 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { trades } from '../data/trades.js';
 import {
-  resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl,
+  resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getStoredImgAsync,
   getRemarks, setRemarks, getRemarksText,
   getWeekLabel, setWeekLabel,
-  getExtraWeeks, setExtraWeeks, getNotesText,
-  exportDatabase, importDatabase, formatDatabase
+  getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
+  exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate
 } from '../data/storage.js';
+
+/* ═══════════════════════════════════════════
+   Global IntersectionObserver for Lazy Loading
+═══════════════════════════════════════════ */
+let globalObserver = null;
+const observerCallbacks = new Map();
+
+function getGlobalObserver() {
+  if (!globalObserver) {
+    globalObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const cb = observerCallbacks.get(entry.target);
+          if (cb) {
+            cb();
+            globalObserver.unobserve(entry.target);
+            observerCallbacks.delete(entry.target);
+          }
+        }
+      });
+    }, { rootMargin: '300px' });
+  }
+  return globalObserver;
+}
+
+function observeElement(el, callback) {
+  observerCallbacks.set(el, callback);
+  getGlobalObserver().observe(el);
+}
+
+function unobserveElement(el) {
+  observerCallbacks.delete(el);
+  if (globalObserver) globalObserver.unobserve(el);
+}
 
 /* ═══════════════════════════════════════════
    Shared rich-editor DOM helpers
@@ -143,11 +177,20 @@ function useRichEditor(editorRef, onContentChange) {
 ═══════════════════════════════════════════ */
 function RemarksModal({ trade, onClose }) {
   const editorRef = useRef(null);
+  const [saveStatus, setSaveStatus] = useState('');
+  const timeoutRef = useRef(null);
 
   // Save on every keystroke
   const persist = useCallback(() => {
     const el = editorRef.current;
     if (el) setRemarks(trade.id, el.innerHTML);
+
+    setSaveStatus('Saving...');
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      setSaveStatus('Saved ✓');
+      timeoutRef.current = setTimeout(() => setSaveStatus(''), 2000);
+    }, 500);
   }, [trade.id]);
 
   const { handleCtxMenu, dismissCtxMenu, handlePaste, CtxMenuEl } = useRichEditor(editorRef, persist);
@@ -188,15 +231,21 @@ function RemarksModal({ trade, onClose }) {
             </span>
             <span className="text-outline-variant">·</span>
             <span className="font-label-md text-label-md text-on-surface">Remarks</span>
+            
+            <div className="ml-4 w-16 text-left">
+              <span className={`text-[11px] font-label-md transition-opacity duration-300 ${saveStatus === 'Saving...' ? 'text-on-surface-variant' : 'text-primary'}`}>
+                {saveStatus}
+              </span>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="flex items-center justify-center w-8 h-8 rounded-full bg-surface-container border border-outline-variant text-on-surface hover:bg-surface-bright transition-colors shrink-0"
+            className="flex items-center justify-center w-8 h-8 rounded-full bg-[#111111] border border-[#222222] text-on-surface hover:bg-surface-bright transition-colors shrink-0"
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
         </div>
-        <div className="border-t border-outline-variant mx-xl shrink-0" />
+        <div className="border-t border-[#222222] mx-xl shrink-0" />
 
         {/* Rich editor */}
         <div
@@ -224,8 +273,8 @@ function RemarksModal({ trade, onClose }) {
 function OutcomeBadge({ outcome }) {
   if (!outcome) return null;
   return (
-    <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-outline-variant/50 z-10 ${
-      outcome === 'W' ? 'bg-surface-container/80 text-tertiary' : 'bg-surface-container/80 text-error'
+    <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-[#222222]/50 z-10 ${
+      outcome === 'W' ? 'bg-[#111111]/80 text-tertiary' : 'bg-[#111111]/80 text-error'
     }`}>
       {outcome}
     </div>
@@ -237,16 +286,37 @@ function OutcomeBadge({ outcome }) {
 ═══════════════════════════════════════════ */
 function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
   const navigate = useNavigate();
-  const [cellImg, setCellImg] = useState(() => resolveImg(weekId, day.day, day.img));
+  const [cellImg, setCellImg] = useState(() => day.img || null);
+  const [isVisible, setIsVisible] = useState(false);
   const [dragging, setDragging] = useState(false);
   const cellRef = useRef(null);
+  
+  useEffect(() => {
+    const el = cellRef.current;
+    if (!el) return;
+    observeElement(el, () => setIsVisible(true));
+    return () => unobserveElement(el);
+  }, []);
 
   useEffect(() => {
-    setCellImg(resolveImg(weekId, day.day, day.img));
-  }, [weekId, day.day, day.img]);
+    if (!isVisible) return;
+    let active = true;
+    getStoredImgAsync(weekId, day.day).then(img => {
+      if (!active) return;
+      if (img !== undefined && img !== null) {
+        setCellImg(img);
+      } else if (day.img) {
+        setCellImg(day.img);
+      } else {
+        setCellImg(null);
+      }
+    });
+    return () => { active = false; };
+  }, [isVisible, weekId, day.day, day.img]);
 
   const notesText = getNotesText(weekId, day.day, day.notes ?? '');
-  const matchesSearch = search && search.trim() !== '' && notesText.toLowerCase().includes(search.toLowerCase());
+  const tags = getTags(weekId, day.day);
+  const matchesSearch = search && search.trim() !== '' && (notesText.toLowerCase().includes(search.toLowerCase()) || tags.some(t => t.toLowerCase().includes(search.toLowerCase())));
 
   const saveFile = useCallback(async (file) => {
     if (!file?.type.startsWith('image/')) return;
@@ -277,7 +347,8 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-outline-variant overflow-hidden p-1 cursor-pointer transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+        className={`relative border-r border-[#222222] overflow-hidden p-1 cursor-pointer transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+        data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         title="Double-click to open detail"
       >
@@ -294,7 +365,8 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-outline-variant overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+      className={`relative border-r border-[#222222] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+      data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
@@ -323,7 +395,7 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-function WeekRow({ trade, onOpenRemarks, search }) {
+function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -349,6 +421,7 @@ function WeekRow({ trade, onOpenRemarks, search }) {
   return (
     <div 
       className="grid hover:bg-surface-container-high transition-colors group w-full"
+      data-testid={`week-row-${trade.id}`}
       style={{ 
         gridTemplateColumns: '96px repeat(5, minmax(225px, 1fr)) 260px', 
         minHeight: '144px',
@@ -356,7 +429,18 @@ function WeekRow({ trade, onOpenRemarks, search }) {
     >
 
       {/* ── Week label — editable ── */}
-      <div className="p-3 border-r border-outline-variant flex flex-col justify-center gap-1">
+      <div className="p-3 border-r border-outline-variant flex flex-col justify-center gap-1 relative group/del">
+        {trade.isCustom && (
+          <button 
+            onClick={() => onDeleteWeek(trade.id)}
+            data-testid={`delete-week-${trade.id}`}
+            aria-label="Delete week"
+            className="absolute top-1 right-1 opacity-0 group-hover/del:opacity-100 hover:bg-error/20 hover:text-error text-on-surface-variant p-0.5 rounded transition-all"
+            title="Delete custom week"
+          >
+            <span className="material-symbols-outlined text-[14px]">delete</span>
+          </button>
+        )}
         <div
           ref={startRef}
           contentEditable
@@ -422,6 +506,7 @@ function WeekRow({ trade, onOpenRemarks, search }) {
       {/* ── Remarks — click to expand ── */}
       <div 
         className="p-3 flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors"
+        data-testid={`remarks-cell-${trade.id}`}
         onClick={() => onOpenRemarks(trade)}
         title="Click to add or edit remarks"
       >
@@ -443,6 +528,14 @@ function WeekRow({ trade, onOpenRemarks, search }) {
 ═══════════════════════════════════════════ */
 function SettingsModal({ onClose }) {
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleEsc);
+    return () => document.removeEventListener('keydown', handleEsc);
+  }, [onClose]);
 
   const handleExport = async () => {
     try {
@@ -534,6 +627,101 @@ function SettingsModal({ onClose }) {
 }
 
 /* ═══════════════════════════════════════════
+   GoTo Modal
+═══════════════════════════════════════════ */
+function GoToModal({ onClose, onApply }) {
+  const [tab, setTab] = useState('date'); // 'date' | 'range'
+  const [dateVal, setDateVal] = useState('');
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+
+  useEffect(() => {
+    const fn = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', fn);
+    return () => document.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-surface-container-high rounded-xl p-6 w-[340px] shadow-2xl flex flex-col gap-4 animate-expand">
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="font-headline-sm text-on-surface font-bold">Go to</h2>
+          <button onClick={onClose} className="text-on-surface-variant hover:text-on-surface transition-colors p-1 rounded-full hover:bg-surface-bright">
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-4 border-b border-outline-variant font-label-md">
+          <button 
+            className={`pb-2 ${tab === 'date' ? 'text-primary border-b-2 border-primary' : 'text-on-surface-variant hover:text-on-surface'}`}
+            onClick={() => setTab('date')}
+          >
+            Date
+          </button>
+          <button 
+            className={`pb-2 ${tab === 'range' ? 'text-primary border-b-2 border-primary' : 'text-on-surface-variant hover:text-on-surface'}`}
+            onClick={() => setTab('range')}
+          >
+            Custom range
+          </button>
+        </div>
+
+        {/* Form content */}
+        {tab === 'date' ? (
+          <div className="flex flex-col gap-2 py-2">
+            <input 
+              type="date" 
+              value={dateVal}
+              onChange={(e) => setDateVal(e.target.value)}
+              className="w-full bg-surface-container-low border border-outline-variant rounded-md py-2 px-3 text-on-surface focus:outline-none focus:border-primary"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3 py-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-on-surface-variant text-[12px] font-label-sm">From</label>
+              <input 
+                type="date" 
+                value={rangeFrom}
+                onChange={(e) => setRangeFrom(e.target.value)}
+                className="w-full bg-surface-container-low border border-outline-variant rounded-md py-2 px-3 text-on-surface focus:outline-none focus:border-primary"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-on-surface-variant text-[12px] font-label-sm">To</label>
+              <input 
+                type="date" 
+                value={rangeTo}
+                onChange={(e) => setRangeTo(e.target.value)}
+                className="w-full bg-surface-container-low border border-outline-variant rounded-md py-2 px-3 text-on-surface focus:outline-none focus:border-primary"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface font-label-md hover:bg-surface-variant transition-colors">
+            Cancel
+          </button>
+          <button 
+            onClick={() => {
+              if (tab === 'date' && dateVal) onApply({ type: 'date', date: dateVal });
+              else if (tab === 'range' && rangeFrom && rangeTo) onApply({ type: 'range', from: rangeFrom, to: rangeTo });
+              onClose();
+            }}
+            className="px-4 py-2 rounded-lg bg-surface-variant text-on-surface font-label-md hover:bg-surface-bright transition-colors shadow-sm"
+          >
+            Go to
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
    WeeklyJournal Page
 ═══════════════════════════════════════════ */
 export default function WeeklyJournal() {
@@ -549,10 +737,42 @@ export default function WeeklyJournal() {
   };
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
   const [showSettings, setShowSettings] = useState(false);
-  const [tableZoom, setTableZoom] = useState(1.0);
+  const [showGoTo, setShowGoTo] = useState(false);
+  const [dateFilter, setDateFilter] = useState(null);
+  const [tableZoom, setTableZoom] = useState(() => {
+    const saved = sessionStorage.getItem('sb_zoom');
+    return saved ? parseFloat(saved) : 1.0;
+  });
   const gridBottomRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const scrollPos = useRef({ top: 0, left: 0 });
 
-  const zoomIn  = useCallback(() => setTableZoom(z => Math.min(2.0, parseFloat((z + 0.1).toFixed(1)))), []);
+  useEffect(() => {
+    sessionStorage.setItem('sb_zoom', tableZoom.toString());
+  }, [tableZoom]);
+
+  useEffect(() => {
+    const savedTop = sessionStorage.getItem('sb_scroll_top');
+    const savedLeft = sessionStorage.getItem('sb_scroll_left');
+    if (scrollContainerRef.current) {
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          if (savedTop) scrollContainerRef.current.scrollTop = parseFloat(savedTop);
+          if (savedLeft) scrollContainerRef.current.scrollLeft = parseFloat(savedLeft);
+        }
+      });
+    }
+    return () => {
+      sessionStorage.setItem('sb_scroll_top', scrollPos.current.top.toString());
+      sessionStorage.setItem('sb_scroll_left', scrollPos.current.left.toString());
+    };
+  }, []);
+
+  const handleScroll = useCallback((e) => {
+    scrollPos.current = { top: e.target.scrollTop, left: e.target.scrollLeft };
+  }, []);
+
+  const zoomIn  = useCallback(() => setTableZoom(z => Math.min(4.0, parseFloat((z + 0.1).toFixed(1)))), []);
   const zoomOut = useCallback(() => setTableZoom(z => Math.max(0.5, parseFloat((z - 0.1).toFixed(1)))), []);
 
   /* ── Add new row ── */
@@ -586,6 +806,16 @@ export default function WeeklyJournal() {
     }, 80);
   }, []);
 
+  /* ── Delete row ── */
+  const deleteRow = useCallback((weekId) => {
+    if (window.confirm('Are you sure you want to delete this custom week? All associated notes and remarks will be permanently deleted.')) {
+      const extras = getExtraWeeks().filter(w => w.id !== weekId);
+      setExtraWeeks(extras);
+      deleteWeekData(weekId);
+      setAllTrades([...trades, ...extras]);
+    }
+  }, []);
+
   /* ── Keyboard shortcuts ── */
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -617,8 +847,28 @@ export default function WeeklyJournal() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [addRow, zoomIn, zoomOut]);
 
-  /* ── Search filter (case-insensitive, searches all text) ── */
+  /* ── Search filter & Date filter ── */
   const filtered = allTrades.filter((t) => {
+    // 1. Date Filter Logic
+    if (dateFilter) {
+      let passesDateFilter = false;
+      const cellDates = t.days
+        .map(d => getTradeDate(t.id, d.day))
+        .filter(d => d !== '');
+      
+      if (cellDates.length > 0) {
+        if (dateFilter.type === 'date') {
+          // If any cell date >= selected date
+          if (cellDates.some(d => d >= dateFilter.date)) passesDateFilter = true;
+        } else if (dateFilter.type === 'range') {
+          // If any cell date is between from and to
+          if (cellDates.some(d => d >= dateFilter.from && d <= dateFilter.to)) passesDateFilter = true;
+        }
+      }
+      if (!passesDateFilter) return false; // Filter out if no dates match or no dates are set
+    }
+
+    // 2. Search Logic
     if (!search.trim()) return true;
     const q   = search.toLowerCase();
     const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
@@ -627,7 +877,11 @@ export default function WeeklyJournal() {
       lbl.weekStart.toLowerCase().includes(q) ||
       lbl.weekEnd.toLowerCase().includes(q)   ||
       rem.toLowerCase().includes(q)            ||
-      t.days.some((d) => getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q))
+      t.days.some((d) => {
+        const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
+        const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
+        return notesMatch || tagsMatch;
+      })
     );
   });
 
@@ -640,12 +894,15 @@ export default function WeeklyJournal() {
 
       {/* ── Settings modal ── */}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      
+      {/* ── GoTo modal ── */}
+      {showGoTo && <GoToModal onClose={() => setShowGoTo(false)} onApply={setDateFilter} />}
 
       <div className="flex h-screen w-full">
         <main className="flex-1 flex flex-col h-full bg-black relative overflow-hidden">
 
           {/* Top App Bar */}
-          <header className="bg-surface-container border-b border-outline-variant flex items-center w-full px-md md:px-lg h-16 shrink-0 z-30 gap-4">
+          <header className="bg-[#111111] border-b border-[#222222] flex items-center w-full px-md md:px-lg h-16 shrink-0 z-30 gap-4">
             {/* Left: title + search */}
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <span className="font-headline-lg text-headline-lg font-bold text-primary shrink-0">Snowball</span>
@@ -655,9 +912,10 @@ export default function WeeklyJournal() {
                 <span className="material-symbols-outlined absolute left-3 text-on-surface-variant text-[18px] pointer-events-none">search</span>
                 <input
                   type="text"
+                  data-testid="search-input"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full bg-surface-container-low rounded-lg border border-outline-variant py-1.5 pl-9 pr-8 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
+                  className="w-full bg-[#0a0a0a] rounded-lg border border-[#222222] py-1.5 pl-9 pr-8 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
                   placeholder="Search remarks, notes, dates…"
                 />
                 {search && (
@@ -672,14 +930,33 @@ export default function WeeklyJournal() {
                   {filtered.length} matched
                 </span>
               )}
+              
+              <button 
+                onClick={() => setShowGoTo(true)} 
+                className="p-1.5 ml-2 hover:bg-surface-bright rounded text-on-surface-variant transition-colors flex items-center justify-center relative" 
+                title="Go to date filter"
+              >
+                <span className="material-symbols-outlined text-[20px]">calendar_month</span>
+                {dateFilter && <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full"></span>}
+              </button>
+              {dateFilter && (
+                <button 
+                  onClick={() => setDateFilter(null)}
+                  className="text-[11px] text-error hover:underline font-label-md shrink-0"
+                >
+                  Clear filter
+                </button>
+              )}
             </div>
 
             {/* Right: zoom + add-row + settings */}
             <div className="flex items-center gap-2 text-on-surface-variant shrink-0">
               {/* Zoom controls */}
-              <div className="flex items-center gap-1 bg-surface-container border border-outline-variant rounded-lg px-1 py-0.5">
+              <div className="flex items-center gap-1 bg-[#111111] border border-[#222222] rounded-lg px-1 py-0.5">
                 <button
                   onClick={zoomOut}
+                  data-testid="zoom-out-btn"
+                  aria-label="Zoom Out"
                   disabled={tableZoom <= 0.5}
                   className="w-8 h-8 flex items-center justify-center rounded text-white font-bold leading-none hover:bg-surface-bright transition-colors disabled:opacity-30 disabled:cursor-not-allowed select-none"
                   title={`Zoom out (${Math.round(tableZoom * 100)}%)`}
@@ -692,7 +969,9 @@ export default function WeeklyJournal() {
                 </span>
                 <button
                   onClick={zoomIn}
-                  disabled={tableZoom >= 2.0}
+                  data-testid="zoom-in-btn"
+                  aria-label="Zoom In"
+                  disabled={tableZoom >= 4.0}
                   className="w-8 h-8 flex items-center justify-center rounded text-white font-bold leading-none hover:bg-surface-bright transition-colors disabled:opacity-30 disabled:cursor-not-allowed select-none"
                   title={`Zoom in (${Math.round(tableZoom * 100)}%)`}
                   style={{ fontSize: '22px', fontWeight: 900 }}
@@ -704,6 +983,8 @@ export default function WeeklyJournal() {
               {/* Add new week row */}
               <button
                 onClick={addRow}
+                data-testid="add-week-btn"
+                aria-label="Add new week"
                 className="flex items-center justify-center w-9 h-9 rounded-full border border-outline-variant transition-colors hover:opacity-90 active:scale-95"
                 style={{ backgroundColor: 'rgb(26,67,126)', color: '#fff', fontSize: '22px', fontWeight: 900, lineHeight: 1 }}
                 title="Add new week (Ctrl+N)"
@@ -711,15 +992,18 @@ export default function WeeklyJournal() {
                 +
               </button>
 
-              {/* Settings */}
-              <button onClick={() => setShowSettings(true)} className="p-2 hover:bg-surface-bright transition-colors rounded-full flex items-center justify-center">
+              <button onClick={() => setShowSettings(true)} data-testid="settings-btn" aria-label="Settings" className="p-2 hover:bg-surface-bright transition-colors rounded-full flex items-center justify-center" title="Settings">
                 <span className="material-symbols-outlined">settings</span>
               </button>
             </div>
           </header>
 
           {/* Workspace — scrolls only on the inner grid area */}
-          <div className="flex-1 overflow-auto custom-scrollbar w-full">
+          <div 
+            ref={scrollContainerRef} 
+            onScroll={handleScroll} 
+            className="flex-1 overflow-auto custom-scrollbar w-full"
+          >
             <div className="w-full h-full">
 
               {/* Grid */}
@@ -732,15 +1016,15 @@ export default function WeeklyJournal() {
                   transition: 'transform 0.15s ease, width 0.15s ease',
                 }}
               >
-              <div className="bg-surface-container border border-outline-variant rounded-xl shadow-sm flex flex-col min-w-[1481px] w-full overflow-auto custom-scrollbar">
+              <div className="bg-[#111111] border border-[#222222] rounded-xl shadow-sm flex flex-col min-w-[1481px] w-full overflow-auto custom-scrollbar">
                 {/* Header row */}
                 <div 
-                  className="grid border-b border-outline-variant bg-surface-container-low font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
+                  className="grid border-b border-[#222222] bg-[#0a0a0a] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
                   style={{ gridTemplateColumns: '96px repeat(5, minmax(225px, 1fr)) 260px' }}
                 >
-                  <div className="p-3 border-r border-outline-variant flex items-center">Week</div>
+                  <div className="p-3 border-r border-[#222222] flex items-center">Week</div>
                   {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
-                    <div key={day} className="p-3 border-r border-outline-variant flex items-center justify-between">
+                    <div key={day} className="p-3 border-r border-[#222222] flex items-center justify-between">
                       {day}
                       <span className="material-symbols-outlined text-[14px] opacity-50">calendar_today</span>
                     </div>
@@ -749,10 +1033,10 @@ export default function WeeklyJournal() {
                 </div>
 
                 {/* Data rows */}
-                <div className="flex flex-col divide-y divide-outline-variant w-full">
+                <div className="flex flex-col divide-y divide-[#222222] w-full">
                   {filtered.length > 0 ? (
                     filtered.map((trade) => (
-                      <WeekRow key={trade.id} trade={trade} onOpenRemarks={setRemarksModal} search={search} />
+                      <WeekRow key={trade.id} trade={trade} onOpenRemarks={setRemarksModal} onDeleteWeek={deleteRow} search={search} />
                     ))
                   ) : (
                     <div className="py-16 text-center text-on-surface-variant font-label-md text-label-md">

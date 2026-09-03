@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes } from '../data/storage.js';
+import { resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
 
 /* ─────────────────────────────────────────────
    Attach resize handles to a wrapper element.
@@ -98,19 +98,44 @@ export default function TradeDetail() {
   const fileInputRef = useRef(null);
   const editorRef    = useRef(null);
   const savedRange   = useRef(null);
+  const hLineRef     = useRef(null);
+  const vLineRef     = useRef(null);
+  const hLineInlineRef = useRef(null);
+  const vLineInlineRef = useRef(null);
 
   const [expanded, setExpanded] = useState(false);
   const [ctxMenu,  setCtxMenu]  = useState(null);
+  const [saveStatus, setSaveStatus] = useState('');
+  const timeoutRef = useRef(null);
+
+  const triggerSaveIndicator = useCallback(() => {
+    setSaveStatus('Saving...');
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      setSaveStatus('Saved ✓');
+      timeoutRef.current = setTimeout(() => setSaveStatus(''), 2000);
+    }, 500);
+  }, []);
 
   // Resolve the main chart: localStorage > router state img > static day.img
   const weekId  = trade?.weekId  ?? id;
   const dayName = trade?.day?.day ?? '';
 
   const [chartImg, setChartImg] = useState(() => resolveImg(weekId, dayName, trade?.day?.img));
+  const [tags, setTagsState] = useState(() => getTags(weekId, dayName));
+  const [tagInput, setTagInput] = useState('');
+  const [tradeDate, setTradeDateState] = useState(() => getTradeDate(weekId, dayName));
+  const [pickerValue, setPickerValue] = useState(() => getTradeDate(weekId, dayName));
+  const dateInputRef = useRef(null);
 
   useEffect(() => {
     if (trade) {
       setChartImg(resolveImg(weekId, dayName, trade.day?.img));
+      setTagsState(getTags(weekId, dayName));
+      
+      const savedTradeDate = getTradeDate(weekId, dayName);
+      setTradeDateState(savedTradeDate);
+      setPickerValue(savedTradeDate);
     }
   }, [trade, weekId, dayName]);
 
@@ -122,7 +147,8 @@ export default function TradeDetail() {
     }
     setStoredImg(weekId, dayName, dataUrl);
     setChartImg(dataUrl);
-  }, [weekId, dayName]);
+    triggerSaveIndicator();
+  }, [weekId, dayName, triggerSaveIndicator]);
 
   /* ── Delete main chart ── */
   const deleteChart = useCallback(() => {
@@ -171,8 +197,43 @@ export default function TradeDetail() {
 
   const persistNotes = useCallback(() => {
     const el = editorRef.current;
-    if (el) setNotes(weekId, dayName, el.innerHTML);
-  }, [weekId, dayName]);
+    if (el) {
+      setNotes(weekId, dayName, el.innerHTML);
+      triggerSaveIndicator();
+    }
+  }, [weekId, dayName, triggerSaveIndicator]);
+
+  /* ── Trade Date ── */
+  const handleDateChange = (e) => {
+    const val = e.target.value;
+    if (val) {
+      localStorage.setItem('sb_last_trade_date', val);
+    }
+    setTradeDateState(val);
+    setPickerValue(val);
+    setTradeDate(weekId, dayName, val);
+    triggerSaveIndicator();
+  };
+  const displayDate = tradeDate ? tradeDate.split('-').reverse().join('-') : 'Select date';
+
+  /* ── Tags Handling ── */
+  const addTag = (e) => {
+    if (e.key === 'Enter' && tagInput.trim()) {
+      e.preventDefault();
+      const newTags = [...tags, tagInput.trim()];
+      setTagsState(newTags);
+      setTags(weekId, dayName, newTags);
+      setTagInput('');
+      triggerSaveIndicator();
+    }
+  };
+
+  const removeTag = (tagToRemove) => {
+    const newTags = tags.filter(t => t !== tagToRemove);
+    setTagsState(newTags);
+    setTags(weekId, dayName, newTags);
+    triggerSaveIndicator();
+  };
 
   /* ── Font size context menu ── */
   const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28];
@@ -251,24 +312,39 @@ export default function TradeDetail() {
 
       {/* ── Fullscreen lightbox ── */}
       {expanded && (
-        <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center animate-expand">
+        <div 
+          className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center animate-expand cursor-crosshair"
+          onMouseMove={(e) => {
+            if (hLineRef.current && vLineRef.current) {
+              hLineRef.current.style.top = `${e.clientY}px`;
+              vLineRef.current.style.left = `${e.clientX}px`;
+            }
+          }}
+        >
+          {/* Crosshair Lines */}
+          <div ref={hLineRef} className="pointer-events-none fixed left-0 right-0 border-t border-dashed border-white/70 z-40 mix-blend-difference" style={{ top: '-10px' }} />
+          <div ref={vLineRef} className="pointer-events-none fixed top-0 bottom-0 border-l border-dashed border-white/70 z-40 mix-blend-difference" style={{ left: '-10px' }} />
+
           <button
             onClick={() => setExpanded(false)}
-            className="absolute top-4 right-4 flex items-center justify-center w-10 h-10 rounded-full bg-surface-container border border-outline-variant text-on-surface hover:bg-surface-bright transition-colors z-10"
+            className="absolute top-4 right-4 flex items-center justify-center w-10 h-10 rounded-full bg-surface-container border border-outline-variant text-on-surface hover:bg-surface-bright transition-colors z-[60] cursor-default"
           >
             <span className="material-symbols-outlined">close</span>
           </button>
-          <img src={chartImg} alt="Chart fullscreen" className="object-contain rounded-lg" style={{ maxHeight: '95vh', maxWidth: '95vw' }} />
+          <img src={chartImg} alt="Chart fullscreen" className="object-contain rounded-lg relative z-30 pointer-events-none" style={{ maxHeight: '95vh', maxWidth: '95vw' }} />
         </div>
       )}
 
-      {/* ── Back button ── */}
-      <div className="w-full max-w-4xl flex justify-start mb-md">
-        <button onClick={handleBack} className="flex items-center gap-sm text-on-surface-variant hover:text-primary transition-colors">
-          <span className="material-symbols-outlined">arrow_back</span>
-          <span className="font-label-md">Back to Journal</span>
-        </button>
-      </div>
+      {/* ── Back button (Floating) ── */}
+      <button 
+        onClick={handleBack} 
+        data-testid="back-button" 
+        aria-label="Back to Journal" 
+        className="fixed top-4 left-4 md:top-6 md:left-6 z-40 flex items-center gap-1.5 text-on-surface-variant/80 hover:text-primary transition-all bg-[#111111]/50 backdrop-blur-md border border-[#222222]/50 px-3 py-1.5 rounded-full shadow-sm hover:bg-[#111111]/80 hover:shadow-md duration-200"
+      >
+        <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+        <span className="text-[11px] font-medium tracking-wide uppercase">Back</span>
+      </button>
 
       {/* ── Document container ── */}
       <main
@@ -277,14 +353,60 @@ export default function TradeDetail() {
       >
         {/* Header */}
         <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 text-on-surface-variant">
-              <span className="material-symbols-outlined text-[18px]">calendar_month</span>
-              <span className="font-label-md text-label-md">{weekStart} – {weekEnd}</span>
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div 
+                className="flex items-center gap-2 text-on-surface-variant relative cursor-pointer" 
+                onClick={() => {
+                  if (!tradeDate) {
+                    const lastDate = localStorage.getItem('sb_last_trade_date') || new Date().toISOString().split('T')[0];
+                    setPickerValue(lastDate);
+                  }
+                  setTimeout(() => dateInputRef.current?.showPicker?.(), 0);
+                }}
+              >
+                <span className="font-label-md text-label-md bg-surface-container-high px-3 py-1.5 rounded-md border border-outline-variant hover:border-primary transition-colors flex items-center gap-2">
+                  {displayDate}
+                  <span className="material-symbols-outlined text-[18px]">calendar_month</span>
+                </span>
+                <input 
+                  type="date" 
+                  ref={dateInputRef} 
+                  value={pickerValue}
+                  onChange={handleDateChange}
+                  className="absolute opacity-0 pointer-events-none w-0 h-0"
+                />
+              </div>
+              <span className="text-outline-variant">·</span>
+              <span className="font-label-md text-label-md text-on-surface">{day.day}</span>
+              <div className="ml-4 w-16 text-left">
+                <span className={`text-[11px] font-label-md transition-opacity duration-300 ${saveStatus === 'Saving...' ? 'text-on-surface-variant' : 'text-primary'}`}>
+                  {saveStatus}
+                </span>
+              </div>
             </div>
-            <span className="text-outline-variant">·</span>
-            <span className="font-label-md text-label-md text-on-surface">{day.day}</span>
           </div>
+          
+          {/* Tags */}
+          <div className="flex items-center gap-2 flex-wrap text-sm">
+            {tags.map(tag => (
+              <span key={tag} className="flex items-center gap-1 bg-surface-variant text-on-surface px-2 py-1 rounded-md text-[12px]">
+                {tag}
+                <button onClick={() => removeTag(tag)} className="text-on-surface-variant hover:text-primary mt-0.5">
+                  <span className="material-symbols-outlined text-[12px]">close</span>
+                </button>
+              </span>
+            ))}
+            <input
+              type="text"
+              placeholder="Add tag..."
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={addTag}
+              className="bg-transparent border-none text-[12px] text-on-surface-variant focus:outline-none focus:ring-0 placeholder-on-surface-variant w-24"
+            />
+          </div>
+
           <div className="border-t border-outline-variant" />
         </div>
 
@@ -293,11 +415,25 @@ export default function TradeDetail() {
           {chartImg ? (
             /* Image present: show with delete button, double-click expands */
             <div
-              className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-video bg-surface-container-lowest relative cursor-zoom-in group"
+              className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-video bg-surface-container-lowest relative cursor-crosshair group"
+              data-testid="chart-image-container"
               onDoubleClick={handleChartDoubleClick}
               title="Double-click to expand"
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                if (hLineInlineRef.current && vLineInlineRef.current) {
+                  hLineInlineRef.current.style.top = `${y}px`;
+                  vLineInlineRef.current.style.left = `${x}px`;
+                }
+              }}
             >
-              <img src={chartImg} alt={`${day.day} chart`} className="w-full h-full object-cover" />
+              {/* Inline Crosshair Lines */}
+              <div ref={hLineInlineRef} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-white/70 z-20 mix-blend-difference" style={{ top: '-10px' }} />
+              <div ref={vLineInlineRef} className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-white/70 z-20 mix-blend-difference" style={{ left: '-10px' }} />
+
+              <img src={chartImg} alt={`${day.day} chart`} className="w-full h-full object-cover pointer-events-none" />
               <button
                 onDoubleClick={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); deleteChart(); }}
@@ -316,6 +452,7 @@ export default function TradeDetail() {
               onDrop={handleChartDrop}
               onPaste={handleChartPaste}
               tabIndex={0}
+              data-testid="chart-dropzone"
               className={`w-full rounded-lg border-2 aspect-video transition-colors flex flex-col items-center justify-center cursor-pointer group focus:outline-none focus:border-primary/50 focus:bg-surface-container-high ${
                 chartDragging
                   ? 'border-primary bg-surface-container-high border-solid'
@@ -337,16 +474,24 @@ export default function TradeDetail() {
 
         {/* ── Notes / freewrite area ── */}
         <section className="w-full flex-1 flex flex-col">
+          {/* Formatting Toolbar */}
+          <div className="flex gap-2 mb-2 p-2 bg-surface-container-low border border-outline-variant rounded-md">
+            <button onClick={() => document.execCommand('bold', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Bold"><span className="material-symbols-outlined text-[20px]">format_bold</span></button>
+            <button onClick={() => document.execCommand('italic', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Italic"><span className="material-symbols-outlined text-[20px]">format_italic</span></button>
+            <button onClick={() => document.execCommand('underline', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Underline"><span className="material-symbols-outlined text-[20px]">format_underlined</span></button>
+
+          </div>
           <div
             ref={editorRef}
             contentEditable
             suppressContentEditableWarning
+            data-testid="notes-editor"
             onContextMenu={handleNotesContextMenu}
             onPaste={handleNotesPaste}
             onInput={persistNotes}
             placeholder="Start writing… paste text or images here"
             spellCheck={false}
-            className="flex-1 min-h-[220px] w-full bg-transparent text-on-surface focus:outline-none cursor-text"
+            className="flex-1 min-h-[220px] w-full bg-transparent text-on-surface focus:outline-none cursor-text p-2"
             style={{ fontSize: '16px', lineHeight: 1.7, wordBreak: 'break-word' }}
           />
         </section>

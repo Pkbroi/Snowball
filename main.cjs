@@ -3,6 +3,10 @@ const path = require('path');
 
 const isDev = !app.isPackaged;
 
+if (isDev) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'trading-journal-dev-v2'));
+}
+
 // ── Windows GPU & rendering flags (safe subset) ────────────────────────────
 app.commandLine.appendSwitch('disable-frame-rate-limit');
 app.commandLine.appendSwitch('enable-gpu-rasterization');

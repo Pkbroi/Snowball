@@ -25,3 +25,8 @@ release
 *.njsproj
 *.sln
 *.sw?
+
+.electron-userdata/
+playwright-report/
+test-results/
+release/

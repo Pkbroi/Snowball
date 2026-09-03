@@ -10,7 +10,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "build": {
     "appId": "com.snowball.tradingjournal",
@@ -44,23 +46,32 @@
     "@fontsource/inter": "^5.3.0",
     "@tailwindcss/forms": "^0.5.11",
     "autoprefixer": "^10.5.4",
+    "browser-image-compression": "^2.0.2",
     "idb-keyval": "^6.3.0",
     "postcss": "^8.5.26",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-is": "^19.2.8",
+    "react-quill": "^2.0.0",
     "react-router-dom": "^7.18.3",
+    "recharts": "^3.10.1",
     "tailwindcss": "^3.4.19"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "@vitest/ui": "^4.1.11",
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
     "electron": "^44.0.0",
     "electron-builder": "^26.15.3",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^30.0.1",
     "oxlint": "^1.79.0",
     "vite": "^8.2.2",
+    "vitest": "^4.1.11",
     "wait-on": "^9.1.0"
   }
 }
