@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Global reset ─── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background-color: #000000;
+  color: #e2e2e2;
+  font-family: 'Inter', sans-serif;
+
+  /* Windows-specific font rendering (antialiased has no effect on Windows/Chromium) */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+
+  /* Prevent accidental text-selection on UI chrome when clicking fast on Windows */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable text selection inside editable and content areas */
+input, textarea, [contenteditable], [contenteditable] *,
+.selectable, .selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ─── Custom Scrollbar (doubled thickness for easy grab) ─── */
+.custom-scrollbar::-webkit-scrollbar { width: 16px; height: 16px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: #111111; border-radius: 8px; }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #353535;
+  border-radius: 8px;
+  /* Inset border creates visual separation from the track on Windows */
+  border: 3px solid #111111;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #555858; }
+.custom-scrollbar::-webkit-scrollbar-corner { background: #111111; }
+
+/* Global scrollbar (non-custom-scrollbar elements) */
+::-webkit-scrollbar { width: 14px; height: 14px; }
+::-webkit-scrollbar-track { background: #0e0e0e; border-radius: 7px; }
+::-webkit-scrollbar-thumb {
+  background: #333333;
+  border-radius: 7px;
+  border: 3px solid #0e0e0e;
+}
+::-webkit-scrollbar-thumb:hover { background: #505353; }
+::-webkit-scrollbar-corner { background: #0e0e0e; }
+
+/* ─── Tonal layers (Page 2) ─── */
+.layer-surface  { background-color: #111111; border: 1px solid #222222; }
+.layer-overlay  { background-color: #1A1A1A; box-shadow: 0 0 15px rgba(255,255,255,0.04); border: 1px solid #333333; }
+
+/* ─── Content-editable placeholder ─── */
+[contenteditable]:empty:before { content: attr(placeholder); color: #8e9192; cursor: text; }
+
+/* ─── Animate expand (Page 2) ─── */
+@keyframes expandIn {
+  0%   { opacity: 0; transform: scale(0.95) translateY(20px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0); }
+}
+.animate-expand { animation: expandIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+/* ─── Selection highlight ─── */
+::selection { background-color: #e2e2e2; color: #636565; }
+::-webkit-selection { background-color: #e2e2e2; color: #636565; }
+
+/* ─── Disable drag on images (prevents Windows ghost-drag artefacts) ─── */
+img { -webkit-user-drag: none; user-drag: none; }
