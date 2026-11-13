@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
@@ -230,6 +230,106 @@ export default function TradeDetail() {
 
   const [expanded, setExpanded] = useState(false);
 
+  // Lightbox pan/zoom: scale is a multiplier on the fit size (1 = fit),
+  // pan is in CSS pixels, both applied as one GPU transform so zooming
+  // never re-decodes or re-lays-out the image.
+  const [lbZoom, setLbZoom] = useState(1);
+  const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
+  const lbImgRef = useRef(null);
+  const lbContainerRef = useRef(null);
+  const lbPointers = useRef(new Map());
+  const lbLastPinch = useRef(0);
+  const lbDragged = useRef(false);
+  const lbZoomRef = useRef(1);
+  const lbPanRef = useRef({ x: 0, y: 0 });
+
+  // Clamp pan so the zoomed image can't be dragged off-screen.
+  const clampLbPan = useCallback((pan, zoom) => {
+    const img = lbImgRef.current;
+    const cont = lbContainerRef.current;
+    if (!img || !cont || !img.naturalWidth) return pan;
+    const rect = cont.getBoundingClientRect();
+    const fit = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    const dispW = img.naturalWidth * fit * zoom;
+    const dispH = img.naturalHeight * fit * zoom;
+    const maxX = Math.max(0, (dispW - rect.width) / 2);
+    const maxY = Math.max(0, (dispH - rect.height) / 2);
+    return { x: Math.max(-maxX, Math.min(maxX, pan.x)), y: Math.max(-maxY, Math.min(maxY, pan.y)) };
+  }, []);
+
+  const applyLbZoom = useCallback((zoom, pan) => {
+    const z = Math.max(1, Math.min(8, zoom));
+    const p = clampLbPan(pan ?? lbPanRef.current, z);
+    lbZoomRef.current = z;
+    lbPanRef.current = p;
+    setLbZoom(z);
+    setLbPan(p);
+  }, [clampLbPan]);
+
+  const lbZoomToOneToOne = useCallback(() => {
+    const img = lbImgRef.current;
+    const cont = lbContainerRef.current;
+    if (!img || !cont || !img.naturalWidth) return;
+    const rect = cont.getBoundingClientRect();
+    const fit = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    applyLbZoom(1 / fit, { x: 0, y: 0 });
+  }, [applyLbZoom]);
+
+  const lbResetZoom = useCallback(() => applyLbZoom(1, { x: 0, y: 0 }), [applyLbZoom]);
+
+  // Wheel zoom (non-passive: the browser would otherwise scroll the page
+  // behind the lightbox) and pinch zoom via pointer events.
+  useEffect(() => {
+    if (!expanded) return;
+    const cont = lbContainerRef.current;
+    if (!cont) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      applyLbZoom(lbZoomRef.current * Math.exp(-e.deltaY * 0.0015));
+    };
+    cont.addEventListener('wheel', onWheel, { passive: false });
+    return () => cont.removeEventListener('wheel', onWheel);
+  }, [expanded, applyLbZoom]);
+
+  // Reset zoom/pan every time the lightbox opens.
+  useEffect(() => {
+    if (expanded) { lbZoomRef.current = 1; lbPanRef.current = { x: 0, y: 0 }; setLbZoom(1); setLbPan({ x: 0, y: 0 }); }
+  }, [expanded]);
+
+  const onLbPointerDown = (e) => {
+    lbPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    lbDragged.current = false;
+    if (lbPointers.current.size === 2) {
+      const pts = [...lbPointers.current.values()];
+      lbLastPinch.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    }
+  };
+  const onLbPointerMove = (e) => {
+    const prev = lbPointers.current.get(e.pointerId);
+    if (!prev) return;
+    lbPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (lbPointers.current.size === 2) {
+      const pts = [...lbPointers.current.values()];
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (lbLastPinch.current > 0 && dist > 0) {
+        applyLbZoom(lbZoomRef.current * (dist / lbLastPinch.current));
+      }
+      lbLastPinch.current = dist;
+      return;
+    }
+    // Drag to pan (only meaningful when zoomed in).
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) lbDragged.current = true;
+    if (lbZoomRef.current > 1) {
+      applyLbZoom(lbZoomRef.current, { x: lbPanRef.current.x + dx, y: lbPanRef.current.y + dy });
+    }
+  };
+  const onLbPointerUp = (e) => {
+    lbPointers.current.delete(e.pointerId);
+    if (lbPointers.current.size < 2) lbLastPinch.current = 0;
+  };
+
   // Lightbox: Escape closes, background scroll is locked, and Lenis is
   // stopped while open so wheel input cannot scroll the page behind it.
   useEffect(() => {
@@ -268,6 +368,12 @@ export default function TradeDetail() {
   const [chartImg, setChartImg] = useState(() => resolveImg(weekId, dayName, trade?.day?.img));
   const [fullImg, setFullImg] = useState(null);
   const [fullLoaded, setFullLoaded] = useState(false);
+  // Medium (1600px) is what the inline chart shows: decoding a 2560px+
+  // original just to display it at ~900px wide was the remaining inline
+  // jank. The full original is only decoded for the lightbox.
+  const [mediumImg, setMediumImg] = useState(null);
+  const [mediumLoaded, setMediumLoaded] = useState(false);
+  const [imgMeta, setImgMeta] = useState(() => getImageMeta(weekId, dayName));
   const [tags, setTagsState] = useState(() => getTags(weekId, dayName));
   const [tagInput, setTagInput] = useState('');
   const [tradeDate, setTradeDateState] = useState(() => getTradeDate(weekId, dayName));
@@ -285,38 +391,57 @@ export default function TradeDetail() {
     }
   }, [trade, weekId, dayName]);
 
-  // Load the FULL-RESOLUTION chart on demand (IndexedDB -> Blob URL),
-  // then swap it in only after it has decoded, so there is no flicker
-  // or half-decoded flash. The grid only ever passes a 480px thumbnail
-  // in router state, and initStorage no longer pre-caches full images,
-  // so without this effect the detail page + lightbox could only ever
-  // show the thumbnail. This restores the pre-8794d9b behaviour, when
-  // DayCell pre-loaded the full image before navigating here.
+  // Load images in tiers: medium (1600px) first for the inline chart,
+  // then the full original for the lightbox. Each tier swaps in only after
+  // it has decoded, so there is no flicker. The thumbnail stays as the
+  // blurred placeholder until the medium lands.
   useEffect(() => {
     let cancelled = false;
     setFullImg(null);
     setFullLoaded(false);
+    setMediumImg(null);
+    setMediumLoaded(false);
+    setImgMeta(getImageMeta(weekId, dayName));
     const placeholder = resolveImg(weekId, dayName, trade?.day?.img);
-    // If the sync value is already the full image (e.g. freshly uploaded
-    // in this session), there is nothing to upgrade.
-    getStoredImgAsync(weekId, dayName).then((url) => {
-      if (cancelled || !url) return;
-      if (url === placeholder) { setFullImg(url); setFullLoaded(true); return; }
+
+    const preload = (url, onReady) => {
       const img = new Image();
       img.decoding = 'async';
       img.onload = () => {
         if (cancelled) return;
-        // decode() resolves once the bitmap is ready to paint.
-        const done = () => { setFullImg(url); setFullLoaded(true); };
+        const done = () => onReady(url);
         if (typeof img.decode === 'function') img.decode().then(done).catch(done);
         else done();
       };
-      img.onerror = () => { /* keep the thumbnail placeholder */ };
+      img.onerror = () => { /* keep the placeholder / lower tier */ };
       img.src = url;
+    };
+
+    // Medium first — fast, and what the user actually sees inline.
+    resolveMediumAsync(weekId, dayName).then((medUrl) => {
+      if (cancelled || !medUrl) return;
+      if (medUrl === placeholder) { setMediumImg(medUrl); setMediumLoaded(true); return; }
+      preload(medUrl, (url) => { setMediumImg(url); setMediumLoaded(true); });
+    }).catch(() => {});
+
+    // Full original — for the lightbox only; also refreshes metadata.
+    getStoredImgAsync(weekId, dayName).then((url) => {
+      if (cancelled || !url) return;
+      setImgMeta(getImageMeta(weekId, dayName));
+      if (url === placeholder) { setFullImg(url); setFullLoaded(true); return; }
+      preload(url, (u) => {
+        setFullImg(u); setFullLoaded(true);
+        setImgMeta(getImageMeta(weekId, dayName));
+        // Neighbours' medium images, when idle — opening the next trade
+        // then feels instant, without decoding full charts in the background.
+        preloadNeighbourImages(weekId, dayName);
+      });
     }).catch(() => { /* keep the thumbnail placeholder */ });
     return () => { cancelled = true; };
   }, [weekId, dayName, trade?.day?.img]);
 
+  // Attach the testid the notes editor tests look for (Quill renders
+  // its own DOM, so the id has to be set on the editor root directly).
   useEffect(() => {
     const attachTestId = () => {
       const root = quillRef.current?.getEditor?.()?.root;
@@ -334,13 +459,23 @@ export default function TradeDetail() {
     // Files/Blobs go straight to setStoredImg(), which stores the original
     // Blob losslessly. Do NOT run them through fileToDataUrl() first:
     // that used to compress them (max 1920px / 1MB) before storage.
+    const applyUpload = (url) => {
+      setChartImg(url); setFullImg(url); setFullLoaded(true); setImgMeta(getImageMeta(weekId, dayName));
+      // Swap the inline chart to the 1600px medium once it exists (it is
+      // generated in the background by setStoredImg, or on demand here).
+      // Without this the inline chart stayed on the full 2560px image
+      // after every upload, defeating the whole medium tier.
+      resolveMediumAsync(weekId, dayName).then((medUrl) => {
+        if (medUrl) { setMediumImg(medUrl); setMediumLoaded(true); }
+      }).catch(() => {});
+    };
     if (fileOrDataUrl instanceof File || fileOrDataUrl instanceof Blob) {
       const url = await setStoredImg(weekId, dayName, fileOrDataUrl);
-      if (url) { setChartImg(url); setFullImg(url); setFullLoaded(true); }
+      if (url) applyUpload(url);
     } else {
       const dataUrl = fileOrDataUrl;
       const url = await setStoredImg(weekId, dayName, dataUrl);
-      if (url) { setChartImg(url); setFullImg(url); setFullLoaded(true); }
+      if (url) applyUpload(url);
     }
     triggerSaveIndicator();
   }, [weekId, dayName, triggerSaveIndicator]);
@@ -351,6 +486,9 @@ export default function TradeDetail() {
     setChartImg(null);
     setFullImg(null);
     setFullLoaded(false);
+    setMediumImg(null);
+    setMediumLoaded(false);
+    setImgMeta(null);
   }, [weekId, dayName]);
 
   /* ── Main chart file input ── */
@@ -459,14 +597,20 @@ export default function TradeDetail() {
       {expanded && (
         <div
           data-testid="chart-lightbox"
-          className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center animate-expand cursor-crosshair"
-          onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
+          ref={lbContainerRef}
+          className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center animate-expand cursor-crosshair touch-none select-none"
+          onClick={(e) => { if (e.target === e.currentTarget && !lbDragged.current) setExpanded(false); }}
           onMouseMove={(e) => {
             if (hLineRef.current && vLineRef.current) {
               hLineRef.current.style.top = `${e.clientY}px`;
               vLineRef.current.style.left = `${e.clientX}px`;
             }
           }}
+          onPointerDown={onLbPointerDown}
+          onPointerMove={onLbPointerMove}
+          onPointerUp={onLbPointerUp}
+          onPointerCancel={onLbPointerUp}
+          onDoubleClick={() => { if (lbZoomRef.current > 1) lbResetZoom(); else applyLbZoom(2); }}
         >
           {/* Crosshair Lines */}
           <div ref={hLineRef} className="pointer-events-none fixed left-0 right-0 border-t border-dashed border-white/70 z-40 mix-blend-difference" style={{ top: '-10px' }} />
@@ -483,17 +627,28 @@ export default function TradeDetail() {
               the image up to the viewport while preserving aspect ratio;
               the old maxHeight/maxWidth-only sizing left a small image
               centred at its natural size. While the full image is still
-              decoding, the thumbnail shows blurred as a placeholder. */}
+              decoding, the thumbnail shows blurred as a placeholder.
+              Zoom/pan is a single GPU transform on this element — the
+              image is never re-decoded while zooming. */}
           <img
-            src={fullImg || chartImg}
+            ref={lbImgRef}
+            src={fullImg || mediumImg || chartImg}
             alt="Chart fullscreen"
             data-testid="chart-lightbox-image"
             decoding="async"
             fetchPriority="high"
             draggable={false}
             onClick={(e) => e.stopPropagation()}
+            style={{ transform: `translate(${lbPan.x}px, ${lbPan.y}px) scale(${lbZoom})`, transformOrigin: 'center center' }}
             className={`relative z-30 pointer-events-none h-full w-full object-contain transition-opacity duration-200 ${fullLoaded ? 'opacity-100' : 'opacity-60 blur-[2px]'}`}
           />
+          {/* Zoom controls */}
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-full bg-surface-container/90 border border-outline-variant px-2 py-1" data-testid="lightbox-zoom-controls">
+            <button onClick={(e) => { e.stopPropagation(); applyLbZoom(lbZoomRef.current / 1.25); }} data-testid="lightbox-zoom-out" aria-label="Zoom out" className="w-8 h-8 rounded-full text-on-surface hover:bg-surface-bright flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">zoom_out</span></button>
+            <button onClick={(e) => { e.stopPropagation(); lbResetZoom(); }} data-testid="lightbox-zoom-fit" aria-label="Fit to screen" className="px-2 h-8 rounded-full text-on-surface hover:bg-surface-bright text-[12px] font-label-md"><span data-testid="lightbox-zoom-label">{Math.round(lbZoom * 100)}%</span></button>
+            <button onClick={(e) => { e.stopPropagation(); applyLbZoom(lbZoomRef.current * 1.25); }} data-testid="lightbox-zoom-in" aria-label="Zoom in" className="w-8 h-8 rounded-full text-on-surface hover:bg-surface-bright flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">zoom_in</span></button>
+            <button onClick={(e) => { e.stopPropagation(); lbZoomToOneToOne(); }} data-testid="lightbox-zoom-1-1" aria-label="Show at 1:1 pixels" title="1:1 pixels" className="px-2 h-8 rounded-full text-on-surface hover:bg-surface-bright text-[12px] font-label-md">1:1</button>
+          </div>
         </div>
       )}
 
@@ -596,12 +751,12 @@ export default function TradeDetail() {
               <div ref={vLineInlineRef} className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-white/70 z-20 mix-blend-difference" style={{ left: '-10px' }} />
 
               <img
-                src={fullImg || chartImg}
+                src={mediumImg || fullImg || chartImg}
                 alt={`${day.day} chart`}
                 decoding="async"
                 fetchPriority="high"
                 draggable={false}
-                className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${fullLoaded ? 'opacity-100' : 'opacity-70'}`}
+                className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${mediumLoaded || fullLoaded ? 'opacity-100' : 'opacity-70'}`}
               />
               <button
                 onDoubleClick={(e) => e.stopPropagation()}
@@ -640,6 +795,17 @@ export default function TradeDetail() {
             </div>
           )}
         </section>
+
+        {/* Original-image badge: proves the stored file was not downscaled */}
+        {imgMeta && imgMeta.width && chartImg && (
+          <div className="flex justify-end" data-testid="original-badge">
+            <span className="text-[11px] font-label-md text-on-surface-variant/70 tabular-nums">
+              Original · {imgMeta.width} × {imgMeta.height}
+              {imgMeta.size ? ` · ${formatBytes(imgMeta.size)}` : ''}
+              {imgMeta.type ? ` · ${imgMeta.type.replace('image/', '').toUpperCase()}` : ''}
+            </span>
+          </div>
+        )}
 
         {/* ── Notes / freewrite area (seamless blank space, no rectangle) ── */}
         <section 

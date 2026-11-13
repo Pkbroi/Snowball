@@ -5,10 +5,9 @@
  *   // Window scroll (TradeDetail, etc.)
  *   useLenis();
  *
- *   // Custom element scroll (WeeklyJournal inner container)
- *   useLenis({ wrapperRef, contentRef });
- *
  * Returns the Lenis instance ref so callers can call lenis.scrollTo() etc.
+ * Returns a ref whose .current stays null when smooth scrolling is off
+ * (reduced motion / touch / low-end) — callers must null-check it.
  *
  * SMOOTH-SCROLL NOTES (regression fix, see BUG-REPORT.md):
  * - Lenis 1.3's built-in `autoRaf` is used instead of a hand-rolled
@@ -18,10 +17,14 @@
  *   made Virtuoso re-render rows for over a second after every wheel
  *   flick. 0.9s with Lenis' default exponential-out easing still feels
  *   smooth without trailing behind the user's hand.
- * - Callers that restore scroll position MUST use `lenis.scrollTo(x, {
- *   immediate: true, force: true })` instead of setting
- *   `container.scrollTop` directly: Lenis owns the scroll position and
- *   will animate back / fight a direct assignment.
+ * - Do NOT use this on the journal grid: Virtuoso is built for native
+ *   scroll, and Lenis smoothing the same container was the main source
+ *   of scroll fight / lag. The grid now uses native scrolling; Lenis is
+ *   for window scrolling (TradeDetail) only.
+ * - Reduced motion: no Lenis at all, native scroll wins.
+ * - Touch (coarse pointer): no Lenis, native touch scrolling is smoother.
+ * - Low-end devices (<=4 cores or <=4 GB RAM): shorter duration (0.6s)
+ *   so the animation never trails behind fast wheel input.
  */
 import { useEffect, useRef } from 'react';
 import Lenis from 'lenis';
@@ -55,12 +58,25 @@ export function useLenis(options = {}) {
   const contentEl = contentRef?.current ?? null;
 
   useEffect(() => {
+    // Respect the user and the device: native scrolling wins here.
+    if (typeof window !== 'undefined') {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      if (window.matchMedia('(pointer: coarse)').matches) return;
+    }
     // For element-based scroll, wait until nodes are available
     if (wrapperRef && !wrapperEl) return;
     if (contentRef && !contentEl) return;
 
+    // Shorter smoothing on low-end hardware so it never feels floaty.
+    let effectiveDuration = duration;
+    if (typeof navigator !== 'undefined') {
+      const lowCores = typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency <= 4;
+      const lowMem = typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 4;
+      if (lowCores || lowMem) effectiveDuration = Math.min(duration, 0.6);
+    }
+
     const lenisOpts = {
-      duration,
+      duration: effectiveDuration,
       smoothWheel,
       syncTouch,
       orientation,

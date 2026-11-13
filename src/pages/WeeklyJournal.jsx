@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
-import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Virtuoso } from 'react-virtuoso';
 import ReactQuill from 'react-quill-new';
@@ -123,7 +122,7 @@ const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
 /* ═══════════════════════════════════════════
    DayCell
 ═══════════════════════════════════════════ */
-const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
+const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search, matchesSearch = false }) {
   const navigate = useNavigate();
   // Synchronous, zero-latency retrieval from pre-cached memory!
   // NOTE: this is intentionally the 480px THUMBNAIL, not the full image.
@@ -141,17 +140,10 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     setCellImg(current);
   }, [weekId, day.day, day.img]);
 
-  // Memoised search match: only recomputes when search query or cell identity changes,
-  // not on every parent re-render — eliminates O(n×5) string ops during typing.
-  const matchesSearch = useMemo(() => {
-    if (!search || !search.trim()) return false;
-    const q = search.trim().toLowerCase();
-    const notesText = getNotesText(weekId, day.day, day.notes ?? '');
-    if (notesText.toLowerCase().includes(q)) return true;
-    const tags = getTags(weekId, day.day);
-    return tags.some(t => t.toLowerCase().includes(q));
-  }, [search, weekId, day.day, day.notes]);
-
+  // matchesSearch comes from the parent's search index (built once per
+  // search change, see searchHits below) — this cell never runs
+  // getNotesText / getTags itself, so typing no longer costs O(n×5)
+  // string ops on every keystroke.
   const saveFile = useCallback(async (file) => {
     if (!file?.type.startsWith('image/')) return;
     // Pass the File straight through: setStoredImg() stores the original
@@ -260,7 +252,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, tableZoom = 1.0 }) {
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -365,6 +357,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
           weekEnd={weekEnd}
           remarks={trade.remarks}
           search={search}
+          matchesSearch={searchHits ? searchHits.has(`${trade.id}|${day.day}`) : false}
         />
       ))}
 
@@ -748,21 +741,12 @@ export default function WeeklyJournal() {
 
   const isRestoringRef = useRef(Boolean(sessionStorage.getItem('sb_scroll_left') || sessionStorage.getItem('sb_scroll_top') || targetWeekId));
 
-  // Lenis smooth scroll — skip Ctrl+Wheel (used for zoom).
-  // duration 0.9 (hook default) instead of 1.1: the longer value trailed
-  // behind fast wheel input and kept Virtuoso re-rendering for >1s.
-  // The ref is kept so scroll restoration can stop Lenis while it sets
-  // scrollTop/scrollLeft directly — otherwise Lenis fights the restore
-  // and animates the list back to where it thought it was.
-  const lenisRef = useLenis({
-    wrapperRef: scrollContainerRef,
-    contentRef: scrollContentRef,
-    orientation: 'both',
-    duration: 0.9,
-    smoothWheel: true,
-    shouldPrevent: (e) => e.ctrlKey || e.metaKey,
-  });
-
+  // No Lenis here: the journal grid uses NATIVE scrolling. Virtuoso is
+  // built for native scroll, and Lenis smoothing the same container was
+  // the main source of scroll fight / lag (it re-rendered rows on every
+  // smooth-scroll tick). Lenis lives on for window scrolling in
+  // TradeDetail only. Scroll restoration below is a direct assignment,
+  // which is safe now that nothing owns the scroll position.
   // Ref callback — called by React with the DOM node once it mounts
   const scrollContainerRefCallback = useCallback((node) => {
     if (node) {
@@ -788,14 +772,9 @@ export default function WeeklyJournal() {
     let attempts = 0;
     const maxAttempts = 15; // ~250ms at 60fps — enough for Virtuoso's initial render
     let animationFrameId = null;
-    // Lenis owns the scroll position: stop it for the duration of the
-    // restore, or it will animate the container back to its own target.
-    const lenis = lenisRef.current;
-    lenis?.stop();
     const finishRestore = () => {
       scrollPos.current = { top: scrollParent.scrollTop, left: scrollParent.scrollLeft };
       isRestoringRef.current = false;
-      lenis?.start();
     };
 
     const tryRestore = () => {
@@ -860,9 +839,8 @@ export default function WeeklyJournal() {
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
-      lenis?.start();
     };
-  }, [scrollParent, targetWeekId, targetDay, lenisRef]);
+  }, [scrollParent, targetWeekId, targetDay]);
 
   // Persist scroll position on unmount
   useEffect(() => {
@@ -1022,6 +1000,24 @@ export default function WeeklyJournal() {
     });
   }, [allTrades, dateFilter, search]);
 
+  // Search index: built ONCE per search change (one pass over all trades),
+  // as a Set of "weekId|day" keys. DayCell/WeekRow just look keys up —
+  // previously every cell ran getNotesText + getTags on every render,
+  // so typing a search query cost O(n×5) string ops per keystroke.
+  const searchHits = useMemo(() => {
+    const hits = new Set();
+    if (!search.trim()) return hits;
+    const q = search.trim().toLowerCase();
+    for (const t of allTrades) {
+      for (const d of t.days) {
+        const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
+        const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
+        if (notesMatch || tagsMatch) hits.add(`${t.id}|${d.day}`);
+      }
+    }
+    return hits;
+  }, [allTrades, search]);
+
   const initialIndex = useMemo(() => {
     if (!targetWeekId) return 0;
     const idx = filtered.findIndex((t) => t.id === targetWeekId);
@@ -1153,27 +1149,27 @@ export default function WeeklyJournal() {
               {/* Grid */}
               <div className="w-full">
               {(() => {
-                const colWeek = `${Math.round(96 * tableZoom)}px`;
-                const colRemarks = `${Math.round(260 * tableZoom)}px`;
-                const colDay = `minmax(${Math.round(225 * tableZoom)}px, 1fr)`;
-                const gridTemplateColumns = `${colWeek} repeat(5, ${colDay}) ${colRemarks}`;
-                const gridMinWidth = `${Math.round(1481 * tableZoom)}px`;
-                const gridWidth = `${Math.round(tableZoom * 100)}%`;
+                // Zoom is a single CSS `zoom` on the container, not a new
+                // gridTemplateColumns + fontSize for every row. The old
+                // approach re-laid-out and re-rendered every WeekRow on
+                // each zoom step; zoom scales the fixed 1× layout instead,
+                // so WeekRow props (and their memo) never change.
+                const gridTemplateColumns = '96px repeat(5, minmax(225px, 1fr)) 260px';
 
                 return (
-                  <div 
+                  <div
                     className="bg-[#111111] border border-[#222222] rounded-xl shadow-sm flex flex-col custom-scrollbar"
                     style={{
-                      width: gridWidth,
-                      minWidth: gridMinWidth,
+                      width: '100%',
+                      minWidth: '1481px',
+                      zoom: tableZoom,
                     }}
                   >
                     {/* Header row */}
-                    <div 
+                    <div
                       className="grid border-b border-[#222222] bg-[#0a0a0a] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
-                      style={{ 
+                      style={{
                         gridTemplateColumns,
-                        fontSize: `${Math.max(10, Math.round(12 * tableZoom))}px`
                       }}
                     >
                       <div className="p-3 border-r border-[#222222] flex items-center">Week</div>
@@ -1209,7 +1205,7 @@ export default function WeeklyJournal() {
                               onDeleteWeek={deleteRow} 
                               search={search}
                               gridCols={gridTemplateColumns}
-                              tableZoom={tableZoom}
+                              searchHits={searchHits}
                             />
                           )}
                         />

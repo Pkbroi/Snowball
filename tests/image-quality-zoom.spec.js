@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import zlib from 'node:zlib';
+import { makeChartPng } from './helpers/chart-png.js';
 
 // Regression tests for the image-quality + zoom bug report (see BUG-REPORT.md):
 //  - uploads must NOT be downscaled to 1920px / compressed to 1MB
@@ -13,57 +13,6 @@ import zlib from 'node:zlib';
 // The 2560x1440 test chart is generated at runtime (pure-Node PNG encoder
 // below) instead of being committed as a binary fixture, so the whole
 // change stays text-only.
-
-function crc32(buf) {
-  let table = crc32.table;
-  if (!table) {
-    table = crc32.table = new Int32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      table[n] = c;
-    }
-  }
-  let c = 0xffffffff;
-  for (const b of buf) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const typeBuf = Buffer.from(type, 'ascii');
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])));
-  return Buffer.concat([len, typeBuf, data, crc]);
-}
-
-/** Encode a 2560x1440 chart-like image (dark background, fine grid lines) as PNG. */
-function makeChartPng(width, height) {
-  const raw = Buffer.alloc(height * (1 + width * 3));
-  for (let y = 0; y < height; y++) {
-    const row = y * (1 + width * 3);
-    raw[row] = 0; // filter: none
-    for (let x = 0; x < width; x++) {
-      const i = row + 1 + x * 3;
-      const grid = x % 40 === 0 || y % 40 === 0;
-      raw[i] = grid ? 74 : 10; // R
-      raw[i + 1] = grid ? 143 : 10; // G
-      raw[i + 2] = grid ? 255 : 10; // B
-    }
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // colour type: RGB
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', zlib.deflateSync(raw)),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
 
 test.describe('Image quality & lightbox zoom', () => {
   test('uploaded chart keeps full resolution and the lightbox fills the screen', async ({ page }, testInfo) => {
@@ -85,11 +34,13 @@ test.describe('Image quality & lightbox zoom', () => {
     const container = page.getByTestId('chart-image-container');
     await expect(container).toBeVisible({ timeout: 15000 });
 
-    // Full resolution, not downscaled to 1920 and not the 480px thumbnail
+    // Inline shows the 1600px medium tier (fast to decode at display
+    // size), not the full original and not the 480px thumbnail. The
+    // full 2560px original is reserved for the lightbox below.
     const inlineImg = container.locator('img');
     await expect
       .poll(async () => inlineImg.evaluate((img) => img.naturalWidth), { timeout: 15000 })
-      .toBe(2560);
+      .toBe(1600);
 
     // Double-click to expand (the "zoom in" the bug report refers to)
     await container.dblclick();

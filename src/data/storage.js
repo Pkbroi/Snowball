@@ -11,8 +11,13 @@ import { get, set, del, keys, entries, clear } from 'idb-keyval';
  * the 8794d9b change added `maxSizeMB: 1, maxWidthOrHeight: 1920`, which
  * downscaled wide trading screenshots and re-encoded them lossily — and
  * because the compressed data-URL was what got stored, the original was
- * lost permanently. Only the 480px thumbnail below is ever compressed,
- * and it is used ONLY for the journal grid, never for detail / lightbox.
+ * lost permanently. Only derived copies below are ever compressed, and
+ * only for display at their own size:
+ *   thumb  — 480px, grid only
+ *   medium — 1600px, detail page inline only
+ *   full   — the original Blob, lightbox / zoom only, never re-encoded.
+ * Derivatives are generated in a Web Worker (src/workers/imageWorker.js)
+ * so encoding never blocks scrolling; the main thread is the fallback.
  */
 
 const memCache = new Map();
@@ -54,6 +59,10 @@ const runBatched = async (items, task, batchSize = 8) => {
 /* ─── Cell chart images (Two-Tier Engine: Full-Res + Ultra-Fast Thumbnail) ─── */
 const imgKey = (weekId, dayName) => `sb_img_${weekId}_${dayName}`;
 const thumbKey = (weekId, dayName) => `sb_thumb_${weekId}_${dayName}`;
+const medKey = (weekId, dayName) => `sb_med_${weekId}_${dayName}`;
+const metaKey = (weekId, dayName) => `sb_meta_${weekId}_${dayName}`;
+export const MEDIUM_MAX_DIM = 1600;
+export const THUMB_MAX_DIM = 480;
 
 /**
  * Fast native thumbnail generator using 2D Canvas.
@@ -62,10 +71,107 @@ const thumbKey = (weekId, dayName) => `sb_thumb_${weekId}_${dayName}`;
  * that is exactly how the zoom regression happened (480px thumb shown
  * full-screen). The full-res image is always kept separately under sb_img_*.
  */
-export const createThumbnail = async (source) => {
+
+/* ─── Derivative generation in a Web Worker (with main-thread fallback) ─── */
+let imageWorker = null;
+let workerSeq = 0;
+const workerPending = new Map();
+
+const getImageWorker = () => {
+  if (imageWorker) return imageWorker;
+  if (typeof Worker === 'undefined' || typeof window === 'undefined') return null;
+  try {
+    imageWorker = new Worker(new URL('../workers/imageWorker.js', import.meta.url), { type: 'module' });
+    imageWorker.onmessage = (e) => {
+      const { id, blob, error } = e.data || {};
+      const entry = workerPending.get(id);
+      if (!entry) return;
+      workerPending.delete(id);
+      clearTimeout(entry.timer);
+      if (error || !blob) entry.reject(new Error(error || 'worker failed'));
+      else entry.resolve(blob);
+    };
+    imageWorker.onerror = () => {
+      // Fail every pending call so callers fall back to the main thread.
+      for (const [, entry] of workerPending) { clearTimeout(entry.timer); entry.reject(new Error('worker error')); }
+      workerPending.clear();
+      imageWorker = null;
+    };
+    return imageWorker;
+  } catch {
+    return null;
+  }
+};
+
+const generateDerivativeInWorker = (blob, maxDim, quality) => new Promise((resolve, reject) => {
+  const worker = getImageWorker();
+  if (!worker) { reject(new Error('no worker')); return; }
+  const id = ++workerSeq;
+  const timer = setTimeout(() => {
+    workerPending.delete(id);
+    reject(new Error('worker timeout'));
+  }, 10000);
+  workerPending.set(id, { resolve, reject, timer });
+  try {
+    worker.postMessage({ id, blob, maxDim, quality });
+  } catch (err) {
+    workerPending.delete(id);
+    clearTimeout(timer);
+    reject(err);
+  }
+});
+
+/** Dimensions of a Blob without decoding the whole image into the DOM. */
+export const getImageDimensions = async (blob) => {
+  if (!blob) return null;
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      const dims = { width: bitmap.width, height: bitmap.height };
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return dims;
+    } catch { /* fall through to <img> */ }
+  }
+  if (typeof document === 'undefined' || typeof Image === 'undefined') return null;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 1000);
+    const img = new Image();
+    img.onload = () => { clearTimeout(timer); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
+    img.onerror = () => { clearTimeout(timer); resolve(null); };
+    img.src = URL.createObjectURL(blob);
+  });
+};
+
+/** Stored metadata for an uploaded chart: original dims / size / type. */
+export const getImageMeta = (weekId, dayName) => memCache.get(metaKey(weekId, dayName)) ?? null;
+
+export const formatBytes = (bytes) => {
+  if (bytes == null || Number.isNaN(bytes)) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/**
+ * Derivative generator (thumbnail / medium). Tries the Web Worker first so
+ * decoding + downscaling never blocks the main thread / scrolling; falls
+ * back to the main-thread canvas path when Workers are unavailable or fail.
+ * `source` may be a Blob or a data-URL string. Returns a Blob, or `source`
+ * unchanged when generation is impossible (jsdom tests, tiny images).
+ */
+export const createDerivative = async (source, { maxDim = THUMB_MAX_DIM, quality = 0.8 } = {}) => {
   if (!source || typeof document === 'undefined') return source;
   if (typeof window !== 'undefined' && window.navigator?.userAgent?.includes('jsdom')) {
     return source;
+  }
+  // Worker path (Blobs only) — decoding + canvas happen off-thread.
+  if (source instanceof Blob) {
+    try {
+      const out = await generateDerivativeInWorker(source, maxDim, quality);
+      if (out && out instanceof Blob) return out;
+    } catch {
+      // fall through to the main-thread path below
+    }
   }
   return new Promise((resolve) => {
     let settled = false;
@@ -76,14 +182,13 @@ export const createThumbnail = async (source) => {
         resolve(res);
       }
     };
-    const timer = setTimeout(() => finish(source), 400);
+    const timer = setTimeout(() => finish(source), 10000);
 
     try {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         try {
-          const maxDim = 480;
           let width = img.naturalWidth || img.width;
           let height = img.naturalHeight || img.height;
           if (width > maxDim || height > maxDim) {
@@ -95,7 +200,6 @@ export const createThumbnail = async (source) => {
               height = maxDim;
             }
           }
-          // Prefer OffscreenCanvas — avoids synchronous main-thread layout during drawing
           if (typeof OffscreenCanvas !== 'undefined') {
             try {
               const offscreen = new OffscreenCanvas(width, height);
@@ -104,7 +208,7 @@ export const createThumbnail = async (source) => {
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, width, height);
-              offscreen.convertToBlob({ type: 'image/webp', quality: 0.8 })
+              offscreen.convertToBlob({ type: 'image/webp', quality })
                 .then(blob => { if (blob) finish(blob); else finish(source); })
                 .catch(() => finish(source));
             } catch {
@@ -122,7 +226,7 @@ export const createThumbnail = async (source) => {
             canvas.toBlob((blob) => {
               if (blob) finish(blob);
               else finish(source);
-            }, 'image/webp', 0.8);
+            }, 'image/webp', quality);
           }
         } catch {
           finish(source);
@@ -142,12 +246,18 @@ export const createThumbnail = async (source) => {
   });
 };
 
+/** 480px grid thumbnail — GRID ONLY, never detail / lightbox. */
+export const createThumbnail = (source) => createDerivative(source, { maxDim: THUMB_MAX_DIM, quality: 0.8 });
+
+/** 1600px detail-page image — inline detail only, never the lightbox. */
+export const createMedium = (source) => createDerivative(source, { maxDim: MEDIUM_MAX_DIM, quality: 0.85 });
+
 export const initStorage = async (onProgress) => {
   const allKeys = await keys();
   memCache.clear();
 
   // 1. Load metadata, notes, tags, remarks, and extra weeks
-  const metaKeys = allKeys.filter(k => typeof k === 'string' && !k.startsWith('sb_img_') && !k.startsWith('sb_thumb_'));
+  const metaKeys = allKeys.filter(k => typeof k === 'string' && !k.startsWith('sb_img_') && !k.startsWith('sb_thumb_') && !k.startsWith('sb_med_'));
   // Batched reads: prevent IDB queue saturation with unlimited Promise.all
   await runBatched(metaKeys, async (key) => {
     const val = await get(key);
@@ -203,6 +313,22 @@ export const initStorage = async (onProgress) => {
         } catch {
           // thumbnail generation failed, full image stays as fallback
         }
+        // Medium tier (1600px, detail page) for legacy images that lack one.
+        try {
+          const mKey = key.replace('sb_img_', 'sb_med_');
+          if (!memCache.has(mKey)) {
+            const existingMed = await get(mKey);
+            if (!existingMed) {
+              const mBlob = await createMedium(val);
+              if (mBlob && mBlob instanceof Blob && mBlob !== val) {
+                memCache.set(mKey, URL.createObjectURL(mBlob));
+                set(mKey, mBlob).catch(() => {});
+              }
+            }
+          }
+        } catch {
+          // medium is optional; detail falls back to the full image
+        }
       }, 4).catch(() => {});
     };
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -247,18 +373,91 @@ export const getStoredImgAsync = async (weekId, dayName) => {
   return url;
 };
 
+/** Synchronous medium retrieval (detail page inline image) */
+export const getStoredMedium = (weekId, dayName) => {
+  const m = memCache.get(medKey(weekId, dayName));
+  if (m === 'DELETED') return null;
+  return m ?? null;
+};
+
+export const getStoredMediumAsync = async (weekId, dayName) => {
+  const cached = memCache.get(medKey(weekId, dayName));
+  if (cached) return cached === 'DELETED' ? null : cached;
+  const val = await get(medKey(weekId, dayName));
+  if (!val) return null;
+  const blob = typeof val === 'string' && val.startsWith('data:image') ? dataURLtoBlob(val) : val;
+  const url = blob instanceof Blob ? URL.createObjectURL(blob) : blob;
+  memCache.set(medKey(weekId, dayName), url);
+  return url;
+};
+
+/** Generate + persist the medium tier from the full image, on demand. */
+export const ensureMedium = async (weekId, dayName) => {
+  const existing = await getStoredMediumAsync(weekId, dayName);
+  if (existing) return existing;
+  const fullUrl = await getStoredImgAsync(weekId, dayName);
+  if (!fullUrl) return null;
+  const fullVal = await get(imgKey(weekId, dayName));
+  if (!fullVal) return null;
+  const blob = typeof fullVal === 'string' && fullVal.startsWith('data:image') ? dataURLtoBlob(fullVal) : fullVal;
+  try {
+    const mBlob = await createMedium(blob);
+    if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
+      const url = URL.createObjectURL(mBlob);
+      memCache.set(medKey(weekId, dayName), url);
+      set(medKey(weekId, dayName), mBlob).catch(() => {});
+      return url;
+    }
+  } catch { /* fall back to full */ }
+  return null;
+};
+
+export const resolveMediumAsync = async (weekId, dayName) => {
+  const med = await getStoredMediumAsync(weekId, dayName);
+  if (med) return med;
+  return ensureMedium(weekId, dayName);
+};
+
+/** Idle-preload the neighbouring days' medium images so opening the next
+ *  trade is instant. Full-res originals are NOT preloaded — the detail
+ *  page loads those on demand, and decoding two full charts in the
+ *  background would jank the scroll this is meant to protect. */
+export const preloadNeighbourImages = (weekId, dayName) => {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const idx = days.indexOf(dayName);
+  if (idx < 0) return;
+  const neighbours = [days[idx - 1], days[idx + 1]].filter(Boolean);
+  const run = () => {
+    for (const d of neighbours) {
+      resolveMediumAsync(weekId, d).catch(() => {});
+    }
+  };
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 3000 });
+  } else {
+    setTimeout(run, 500);
+  }
+};
+
 export const setStoredImg = async (weekId, dayName, val) => {
   const kImg = imgKey(weekId, dayName);
   const kThumb = thumbKey(weekId, dayName);
+  const kMed = medKey(weekId, dayName);
+  const kMeta = metaKey(weekId, dayName);
 
   // Delete path: null, undefined, or the 'DELETED' sentinel used by callers.
   if (val == null || val === 'DELETED') {
     revokeBlobUrl(memCache.get(kImg));
     revokeBlobUrl(memCache.get(kThumb));
+    revokeBlobUrl(memCache.get(kMed));
     memCache.set(kImg, 'DELETED');
     memCache.set(kThumb, 'DELETED');
+    memCache.set(kMed, 'DELETED');
+    memCache.delete(kMeta);
     del(kImg);
     del(kThumb);
+    del(kMed);
+    del(kMeta);
     return null;
   }
 
@@ -273,6 +472,8 @@ export const setStoredImg = async (weekId, dayName, val) => {
 
   revokeBlobUrl(memCache.get(kImg));
   revokeBlobUrl(memCache.get(kThumb));
+  revokeBlobUrl(memCache.get(kMed));
+  memCache.delete(kMed);
   const displayUrl = URL.createObjectURL(blob);
   memCache.set(kImg, displayUrl);
   memCache.set(kThumb, displayUrl); // grid placeholder until the real thumb lands
@@ -281,6 +482,25 @@ export const setStoredImg = async (weekId, dayName, val) => {
   // write could still be in flight when the user navigated away / reloaded,
   // silently losing the upload.
   await set(kImg, blob);
+
+  // Record original metadata (dimensions / size / type) at upload time so
+  // the UI can reserve layout and show "Original · 2560×1440 · 4.2 MB"
+  // without decoding the image first. This is metadata about the original
+  // only — it never changes the pixels.
+  try {
+    const dims = await getImageDimensions(blob);
+    const meta = {
+      width: dims?.width ?? null,
+      height: dims?.height ?? null,
+      size: blob.size,
+      type: blob.type,
+      name: val instanceof File ? val.name : null,
+    };
+    memCache.set(kMeta, meta);
+    set(kMeta, meta).catch(() => {});
+  } catch {
+    // metadata is best-effort; the image itself is already saved
+  }
 
   // Create and save optimised thumbnail for the grid ONLY.
   try {
@@ -294,16 +514,33 @@ export const setStoredImg = async (weekId, dayName, val) => {
     console.warn('Could not generate thumbnail:', e);
   }
 
+  // Medium tier (1600px, detail page) — generated in the background via
+  // the worker so the upload itself returns immediately. The detail page
+  // falls back to the full image until it lands, and generates it on
+  // demand if it is still missing.
+  createMedium(blob).then((mBlob) => {
+    if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
+      const url = URL.createObjectURL(mBlob);
+      memCache.set(kMed, url);
+      set(kMed, mBlob).catch(() => {});
+    }
+  }).catch(() => {});
+
   return displayUrl;
 };
 
 export const clearStoredImg = (weekId, dayName) => {
   revokeBlobUrl(memCache.get(imgKey(weekId, dayName)));
   revokeBlobUrl(memCache.get(thumbKey(weekId, dayName)));
+  revokeBlobUrl(memCache.get(medKey(weekId, dayName)));
   memCache.delete(imgKey(weekId, dayName));
   memCache.delete(thumbKey(weekId, dayName));
+  memCache.delete(medKey(weekId, dayName));
+  memCache.delete(metaKey(weekId, dayName));
   del(imgKey(weekId, dayName));
   del(thumbKey(weekId, dayName));
+  del(medKey(weekId, dayName));
+  del(metaKey(weekId, dayName));
 };
 
 export const resolveImg = (weekId, dayName, staticImg) => {
@@ -394,6 +631,10 @@ export const deleteWeekData = (weekId) => {
     del(imgKey(weekId, dayName));
     memCache.delete(thumbKey(weekId, dayName));
     del(thumbKey(weekId, dayName));
+    memCache.delete(medKey(weekId, dayName));
+    del(medKey(weekId, dayName));
+    memCache.delete(metaKey(weekId, dayName));
+    del(metaKey(weekId, dayName));
     memCache.delete(`sb_tags_${weekId}_${dayName}`);
     del(`sb_tags_${weekId}_${dayName}`);
     memCache.delete(`sb_date_${weekId}_${dayName}`);
@@ -471,7 +712,7 @@ export const exportDatabase = async (onProgress) => {
 
   // Exclude thumbnails — they are derived from full images and will be
   // regenerated automatically by initStorage after import.
-  const exportable = allEntries.filter(([k]) => !String(k).startsWith('sb_thumb_'));
+  const exportable = allEntries.filter(([k]) => !String(k).startsWith('sb_thumb_') && !String(k).startsWith('sb_med_'));
 
   const blobEntries = exportable.filter(([, v]) => v instanceof Blob);
   const total = blobEntries.length;
