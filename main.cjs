@@ -1,4 +1,5 @@
-const { app, BrowserWindow, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, dialog, powerSaveBlocker } = require('electron');
+const fs = require('fs');
 const path = require('path');
 
 const isDev = !app.isPackaged;
@@ -39,7 +40,25 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+    // NEVER show a bare black window again: the v2 exe shipped without
+    // dist/ (the build output had been deleted before electron-builder
+    // ran, and electron-builder does not run the Vite build itself), so
+    // loadFile silently failed and the app sat on a black screen with no
+    // error anywhere. If the renderer is missing, say so plainly.
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      const msg = `Snowball could not start: the app files are missing from this install (dist/index.html not found at ${indexPath}). Please reinstall the app.`;
+      console.error(msg);
+      dialog.showErrorBox('Snowball failed to start', msg);
+      mainWindow.loadURL(`data:text/html,<body style="background:#000;color:#fff;font-family:sans-serif;padding:40px"><h1>Snowball failed to start</h1><p>The app files are missing from this install (dist/index.html not found). Please reinstall the app.</p></body>`);
+      return;
+    }
+    mainWindow.loadFile(indexPath);
+    // Same safety net for any later load failure (corrupt install, etc.)
+    mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+      console.error(`Failed to load app (${code}): ${desc}`);
+      dialog.showErrorBox('Snowball failed to start', `The app could not load its files (${desc}). Please reinstall the app.`);
+    });
   }
 }
 
