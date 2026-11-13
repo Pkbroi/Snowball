@@ -6,7 +6,7 @@ import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import { trades } from '../data/trades.js';
 import {
-  resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getStoredImgAsync,
+  setStoredImg, getStoredImgAsync,
   getStoredImg, getStoredThumb,
   getRemarks, setRemarks, getRemarksText,
   getWeekLabel, setWeekLabel,
@@ -126,7 +126,12 @@ const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
 const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
   const navigate = useNavigate();
   // Synchronous, zero-latency retrieval from pre-cached memory!
+  // NOTE: this is intentionally the 480px THUMBNAIL, not the full image.
+  // The grid must never decode full-res charts (that was the scroll-jank
+  // cause in the old lazy-load path). The full image is loaded only when
+  // navigating to the detail page — see goToDetail() below.
   const [cellImg, setCellImg] = useState(() => getStoredThumb(weekId, day.day) || day.img || null);
+  const [imgLoaded, setImgLoaded] = useState(false);
   const [dragging, setDragging] = useState(false);
   const cellRef = useRef(null);
 
@@ -149,12 +154,15 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
 
   const saveFile = useCallback(async (file) => {
     if (!file?.type.startsWith('image/')) return;
-    const dataUrl = await fileToDataUrl(file);
-    await setStoredImg(weekId, day.day, dataUrl);
-    setCellImg(getStoredThumb(weekId, day.day) || dataUrl);
+    // Pass the File straight through: setStoredImg() stores the original
+    // Blob losslessly and generates the grid thumbnail separately.
+    // (Previously this went through fileToDataUrl() -> browser-image-
+    // compression, max 1920px / 1MB, before storage.)
+    const url = await setStoredImg(weekId, day.day, file);
+    setCellImg(getStoredThumb(weekId, day.day) || url);
   }, [weekId, day.day]);
 
-  const goToDetail = useCallback(() => {
+  const goToDetail = useCallback(async () => {
     const container = document.querySelector('[data-testid="main-scroll-container"]');
     if (container) {
       sessionStorage.setItem('sb_scroll_top', container.scrollTop.toString());
@@ -163,14 +171,23 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     sessionStorage.setItem('sb_last_week_id', weekId);
     sessionStorage.setItem('sb_last_day', day.day);
 
+    // Pre-load the FULL-RESOLUTION image before navigating. This is the
+    // other half of the zoom fix: getStoredImg() returns null when the
+    // full image was never cached (initStorage only pre-caches thumbs),
+    // so the old code fell back to `cellImg` — the 480px thumbnail —
+    // and the detail page / lightbox could only ever show that thumbnail.
+    // An IndexedDB read + Blob URL is ~10-50ms, invisible next to a
+    // navigation; if it fails we still navigate with the thumbnail.
+    const fullImg = await getStoredImgAsync(weekId, day.day).catch(() => null);
+
     navigate(`/trade/${weekId}`, {
-      state: { 
-        weekId, 
-        weekStart, 
-        weekEnd, 
-        remarks, 
-        search, 
-        day: { ...day, img: getStoredImg(weekId, day.day) || cellImg },
+      state: {
+        weekId,
+        weekStart,
+        weekEnd,
+        remarks,
+        search,
+        day: { ...day, img: fullImg || getStoredImg(weekId, day.day) || cellImg },
         scrollLeft: container ? container.scrollLeft : undefined,
         scrollTop: container ? container.scrollTop : undefined,
       },
@@ -200,7 +217,9 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
       >
         <div className="absolute inset-1 border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
           <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
-            className="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" />
+            fetchPriority="low" draggable={false} onLoad={() => setImgLoaded(true)}
+            onError={() => setImgLoaded(true)}
+            className={`w-full h-full object-cover transition-opacity duration-300 hover:opacity-100 ${imgLoaded ? 'opacity-90' : 'opacity-0'}`} />
           <OutcomeBadge outcome={day.outcome} />
         </div>
       </div>
@@ -729,12 +748,17 @@ export default function WeeklyJournal() {
 
   const isRestoringRef = useRef(Boolean(sessionStorage.getItem('sb_scroll_left') || sessionStorage.getItem('sb_scroll_top') || targetWeekId));
 
-  // Lenis smooth scroll — skip Ctrl+Wheel (used for zoom)
-  useLenis({
+  // Lenis smooth scroll — skip Ctrl+Wheel (used for zoom).
+  // duration 0.9 (hook default) instead of 1.1: the longer value trailed
+  // behind fast wheel input and kept Virtuoso re-rendering for >1s.
+  // The ref is kept so scroll restoration can stop Lenis while it sets
+  // scrollTop/scrollLeft directly — otherwise Lenis fights the restore
+  // and animates the list back to where it thought it was.
+  const lenisRef = useLenis({
     wrapperRef: scrollContainerRef,
     contentRef: scrollContentRef,
     orientation: 'both',
-    duration: 1.1,
+    duration: 0.9,
     smoothWheel: true,
     shouldPrevent: (e) => e.ctrlKey || e.metaKey,
   });
@@ -764,6 +788,15 @@ export default function WeeklyJournal() {
     let attempts = 0;
     const maxAttempts = 15; // ~250ms at 60fps — enough for Virtuoso's initial render
     let animationFrameId = null;
+    // Lenis owns the scroll position: stop it for the duration of the
+    // restore, or it will animate the container back to its own target.
+    const lenis = lenisRef.current;
+    lenis?.stop();
+    const finishRestore = () => {
+      scrollPos.current = { top: scrollParent.scrollTop, left: scrollParent.scrollLeft };
+      isRestoringRef.current = false;
+      lenis?.start();
+    };
 
     const tryRestore = () => {
       attempts++;
@@ -805,14 +838,12 @@ export default function WeeklyJournal() {
           cellEl?.classList.remove('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-black');
         }, 2000);
 
-        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
-        isRestoringRef.current = false;
+        finishRestore();
         return;
       }
 
       if (restored && !targetWeekId && attempts >= 3) {
-        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
-        isRestoringRef.current = false;
+        finishRestore();
         return;
       }
 
@@ -821,8 +852,7 @@ export default function WeeklyJournal() {
       } else {
         if (targetLeft !== null && !isNaN(targetLeft)) container.scrollLeft = targetLeft;
         if (targetTop !== null && !isNaN(targetTop)) container.scrollTop = targetTop;
-        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
-        isRestoringRef.current = false;
+        finishRestore();
       }
     };
 
@@ -830,8 +860,9 @@ export default function WeeklyJournal() {
 
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      lenis?.start();
     };
-  }, [scrollParent, targetWeekId, targetDay]);
+  }, [scrollParent, targetWeekId, targetDay, lenisRef]);
 
   // Persist scroll position on unmount
   useEffect(() => {
@@ -1163,8 +1194,13 @@ export default function WeeklyJournal() {
                           customScrollParent={scrollParent}
                           data={filtered}
                           initialTopMostItemIndex={initialIndex}
-                          overscan={{ main: 600, reverse: 600 }}
-                          increaseViewportBy={{ top: 500, bottom: 500 }}
+                          // 600px overscan + 500px extra viewport rendered
+                          // ~3x more rows (and decoded thumbnails) than the
+                          // viewport needs — the main scroll-jank contributor
+                          // with Lenis, which re-renders on every scroll tick.
+                          // 200px is plenty for a smooth, gap-free scroll.
+                          overscan={{ main: 200, reverse: 200 }}
+                          increaseViewportBy={{ top: 200, bottom: 200 }}
                           itemContent={(index, trade) => (
                             <WeekRow 
                               key={trade.id} 

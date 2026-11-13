@@ -118,8 +118,13 @@ img { -webkit-user-drag: none; user-drag: none; }
 [data-testid="main-scroll-container"] {
   /* Prevent Windows scroll-chain stutter when reaching list edges */
   overscroll-behavior: contain;
-  /* Pre-promote the scroll layer so the compositor can paint it independently */
-  will-change: scroll-position;
+  /* NOTE: do NOT add `will-change: scroll-position` here. It forces the
+     browser to promote the entire (very wide, very tall, virtualised)
+     grid into one giant compositor layer, which costs memory and makes
+     scrolling slower, not faster — especially combined with Lenis +
+     Virtuoso re-rendering on every scroll tick. Native scrolling of
+     this container is already composited; Lenis animates scrollTop,
+     which needs no extra layer. */
 }
 
 /* ─── Cell containment: isolate repaints to individual cells ─── */

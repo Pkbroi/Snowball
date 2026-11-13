@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
@@ -197,7 +197,7 @@ export default function TradeDetail() {
   const search = state?.search || '';
 
   // Apply smooth scrolling to the window for this page
-  useLenis();
+  const lenisRef = useLenis();
 
   // Resolve trade data — prefer router state, fall back to lookup
   const trade = state ?? (() => {
@@ -229,6 +229,22 @@ export default function TradeDetail() {
   const vLineInlineRef = useRef(null);
 
   const [expanded, setExpanded] = useState(false);
+
+  // Lightbox: Escape closes, background scroll is locked, and Lenis is
+  // stopped while open so wheel input cannot scroll the page behind it.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    lenisRef.current?.stop();
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+      lenisRef.current?.start();
+    };
+  }, [expanded, lenisRef]);
   const [saveStatus, setSaveStatus] = useState('');
   const timeoutRef = useRef(null);
 
@@ -245,7 +261,13 @@ export default function TradeDetail() {
   const weekId  = trade?.weekId  ?? id;
   const dayName = trade?.day?.day ?? '';
 
+  // chartImg is the fast placeholder (thumbnail / router-state image).
+  // fullImg is the original, uncompressed chart, loaded lazily below.
+  // The lightbox MUST use fullImg — showing the 480px thumbnail at
+  // 95vw was the zoom regression (see storage.js / BUG-REPORT.md).
   const [chartImg, setChartImg] = useState(() => resolveImg(weekId, dayName, trade?.day?.img));
+  const [fullImg, setFullImg] = useState(null);
+  const [fullLoaded, setFullLoaded] = useState(false);
   const [tags, setTagsState] = useState(() => getTags(weekId, dayName));
   const [tagInput, setTagInput] = useState('');
   const [tradeDate, setTradeDateState] = useState(() => getTradeDate(weekId, dayName));
@@ -256,12 +278,44 @@ export default function TradeDetail() {
     if (trade) {
       setChartImg(resolveImg(weekId, dayName, trade.day?.img));
       setTagsState(getTags(weekId, dayName));
-      
+
       const savedTradeDate = getTradeDate(weekId, dayName);
       setTradeDateState(savedTradeDate);
       setPickerValue(savedTradeDate);
     }
   }, [trade, weekId, dayName]);
+
+  // Load the FULL-RESOLUTION chart on demand (IndexedDB -> Blob URL),
+  // then swap it in only after it has decoded, so there is no flicker
+  // or half-decoded flash. The grid only ever passes a 480px thumbnail
+  // in router state, and initStorage no longer pre-caches full images,
+  // so without this effect the detail page + lightbox could only ever
+  // show the thumbnail. This restores the pre-8794d9b behaviour, when
+  // DayCell pre-loaded the full image before navigating here.
+  useEffect(() => {
+    let cancelled = false;
+    setFullImg(null);
+    setFullLoaded(false);
+    const placeholder = resolveImg(weekId, dayName, trade?.day?.img);
+    // If the sync value is already the full image (e.g. freshly uploaded
+    // in this session), there is nothing to upgrade.
+    getStoredImgAsync(weekId, dayName).then((url) => {
+      if (cancelled || !url) return;
+      if (url === placeholder) { setFullImg(url); setFullLoaded(true); return; }
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        if (cancelled) return;
+        // decode() resolves once the bitmap is ready to paint.
+        const done = () => { setFullImg(url); setFullLoaded(true); };
+        if (typeof img.decode === 'function') img.decode().then(done).catch(done);
+        else done();
+      };
+      img.onerror = () => { /* keep the thumbnail placeholder */ };
+      img.src = url;
+    }).catch(() => { /* keep the thumbnail placeholder */ });
+    return () => { cancelled = true; };
+  }, [weekId, dayName, trade?.day?.img]);
 
   useEffect(() => {
     const attachTestId = () => {
@@ -277,12 +331,17 @@ export default function TradeDetail() {
 
   /* ── Save chart image to localStorage + state ── */
   const persistChart = useCallback(async (fileOrDataUrl) => {
-    let dataUrl = fileOrDataUrl;
+    // Files/Blobs go straight to setStoredImg(), which stores the original
+    // Blob losslessly. Do NOT run them through fileToDataUrl() first:
+    // that used to compress them (max 1920px / 1MB) before storage.
     if (fileOrDataUrl instanceof File || fileOrDataUrl instanceof Blob) {
-      dataUrl = await fileToDataUrl(fileOrDataUrl);
+      const url = await setStoredImg(weekId, dayName, fileOrDataUrl);
+      if (url) { setChartImg(url); setFullImg(url); setFullLoaded(true); }
+    } else {
+      const dataUrl = fileOrDataUrl;
+      const url = await setStoredImg(weekId, dayName, dataUrl);
+      if (url) { setChartImg(url); setFullImg(url); setFullLoaded(true); }
     }
-    setStoredImg(weekId, dayName, dataUrl);
-    setChartImg(dataUrl);
     triggerSaveIndicator();
   }, [weekId, dayName, triggerSaveIndicator]);
 
@@ -290,6 +349,8 @@ export default function TradeDetail() {
   const deleteChart = useCallback(() => {
     setStoredImg(weekId, dayName, 'DELETED');
     setChartImg(null);
+    setFullImg(null);
+    setFullLoaded(false);
   }, [weekId, dayName]);
 
   /* ── Main chart file input ── */
@@ -396,8 +457,10 @@ export default function TradeDetail() {
 
       {/* ── Fullscreen lightbox ── */}
       {expanded && (
-        <div 
+        <div
+          data-testid="chart-lightbox"
           className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center animate-expand cursor-crosshair"
+          onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
           onMouseMove={(e) => {
             if (hLineRef.current && vLineRef.current) {
               hLineRef.current.style.top = `${e.clientY}px`;
@@ -415,7 +478,22 @@ export default function TradeDetail() {
           >
             <span className="material-symbols-outlined">close</span>
           </button>
-          <img src={chartImg} alt="Chart fullscreen" className="object-contain rounded-lg relative z-30 pointer-events-none" style={{ maxHeight: '95vh', maxWidth: '95vw' }} />
+          {/* Full-res source, sized to FILL the viewport (not its natural
+              480px thumbnail size). w-full/h-full + object-contain scales
+              the image up to the viewport while preserving aspect ratio;
+              the old maxHeight/maxWidth-only sizing left a small image
+              centred at its natural size. While the full image is still
+              decoding, the thumbnail shows blurred as a placeholder. */}
+          <img
+            src={fullImg || chartImg}
+            alt="Chart fullscreen"
+            data-testid="chart-lightbox-image"
+            decoding="async"
+            fetchPriority="high"
+            draggable={false}
+            onClick={(e) => e.stopPropagation()}
+            className={`relative z-30 pointer-events-none h-full w-full object-contain transition-opacity duration-200 ${fullLoaded ? 'opacity-100' : 'opacity-60 blur-[2px]'}`}
+          />
         </div>
       )}
 
@@ -517,7 +595,14 @@ export default function TradeDetail() {
               <div ref={hLineInlineRef} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-white/70 z-20 mix-blend-difference" style={{ top: '-10px' }} />
               <div ref={vLineInlineRef} className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-white/70 z-20 mix-blend-difference" style={{ left: '-10px' }} />
 
-              <img src={chartImg} alt={`${day.day} chart`} className="w-full h-full object-contain pointer-events-none" />
+              <img
+                src={fullImg || chartImg}
+                alt={`${day.day} chart`}
+                decoding="async"
+                fetchPriority="high"
+                draggable={false}
+                className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${fullLoaded ? 'opacity-100' : 'opacity-70'}`}
+              />
               <button
                 onDoubleClick={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); deleteChart(); }}

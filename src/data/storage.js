@@ -1,12 +1,42 @@
 import { get, set, del, keys, entries, clear } from 'idb-keyval';
-import imageCompression from 'browser-image-compression';
 
 /**
  * Snowball persistence helpers using idb-keyval (IndexedDB)
  * with an in-memory cache for synchronous, zero-latency retrieval.
+ *
+ * IMAGE QUALITY RULE (regression fix, see BUG-REPORT.md):
+ * Full-resolution chart images are stored LOSSLESSLY, exactly as uploaded.
+ * No resize, no re-encode, no `browser-image-compression` on the upload path.
+ * The old code did `FileReader.readAsDataURL(file)` with no compression;
+ * the 8794d9b change added `maxSizeMB: 1, maxWidthOrHeight: 1920`, which
+ * downscaled wide trading screenshots and re-encoded them lossily — and
+ * because the compressed data-URL was what got stored, the original was
+ * lost permanently. Only the 480px thumbnail below is ever compressed,
+ * and it is used ONLY for the journal grid, never for detail / lightbox.
  */
 
 const memCache = new Map();
+
+const revokeBlobUrl = (url) => {
+  if (typeof url === 'string' && url.startsWith('blob:')) {
+    try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+  }
+};
+
+/**
+ * Convert a data-URL string directly to a Blob using atob + Uint8Array.
+ * Function declaration so it is hoisted for use by getStoredImgAsync below.
+ * (Previously defined only near the export helpers, below its first use.)
+ */
+function dataURLtoBlob(dataURL) {
+  const comma = dataURL.indexOf(',');
+  const mime = dataURL.slice(5, dataURL.indexOf(';'));
+  const b64 = dataURL.slice(comma + 1);
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
 
 /**
  * Run async tasks with limited concurrency to avoid overwhelming the IndexedDB
@@ -28,6 +58,9 @@ const thumbKey = (weekId, dayName) => `sb_thumb_${weekId}_${dayName}`;
 /**
  * Fast native thumbnail generator using 2D Canvas.
  * Resizes images to max 480px width/height and compresses to WebP/JPEG ~25KB.
+ * GRID ONLY. Never feed its output to the detail page or the lightbox —
+ * that is exactly how the zoom regression happened (480px thumb shown
+ * full-screen). The full-res image is always kept separately under sb_img_*.
  */
 export const createThumbnail = async (source) => {
   if (!source || typeof document === 'undefined') return source;
@@ -68,6 +101,8 @@ export const createThumbnail = async (source) => {
               const offscreen = new OffscreenCanvas(width, height);
               const ctx = offscreen.getContext('2d');
               if (!ctx) { finish(source); return; }
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, width, height);
               offscreen.convertToBlob({ type: 'image/webp', quality: 0.8 })
                 .then(blob => { if (blob) finish(blob); else finish(source); })
@@ -81,6 +116,8 @@ export const createThumbnail = async (source) => {
             canvas.height = height;
             const ctx = canvas.getContext('2d');
             if (!ctx) { finish(source); return; }
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
             canvas.toBlob((blob) => {
               if (blob) finish(blob);
@@ -117,7 +154,11 @@ export const initStorage = async (onProgress) => {
     memCache.set(key, val);
   });
 
-  // 2. Pre-cache all thumbnails into memory (thumbnails are tiny)
+  // 2. Pre-cache all thumbnails into memory (thumbnails are tiny).
+  //    Full-res images are deliberately NOT loaded here: loading/decoding
+  //    every chart up front is what blocked first paint and made scrolling
+  //    janky. They are loaded lazily, on demand, by getStoredImgAsync()
+  //    (only when a detail page / lightbox actually needs one).
   const thumbKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('sb_thumb_'));
   await runBatched(thumbKeys, async (key) => {
     const val = await get(key);
@@ -127,44 +168,49 @@ export const initStorage = async (onProgress) => {
     }
   });
 
-  // 3. For any image without a thumbnail, fully await loading + thumbnail generation
-  //    so all images are ready before the UI renders (no lazy/scroll-triggered loading)
+  const total = thumbKeys.length;
+  if (onProgress && total > 0) onProgress(total, total);
+
+  // 3. Backfill missing thumbnails IN THE BACKGROUND, after first paint.
+  //    Previously this was fully awaited (canvas-decode of every full-res
+  //    image, batched, before the UI rendered) — the main cause of the
+  //    slow "Preparing images..." startup. Until a thumb exists the grid
+  //    falls back to the cached full image (getStoredThumb does that), so
+  //    nothing is visually missing; the thumb just swaps in when ready.
+  //    requestIdleCallback keeps this off the critical path; setTimeout is
+  //    the fallback (Electron / older Chromium).
   const imgKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('sb_img_'));
   const imgKeysWithoutThumb = imgKeys.filter(key => !memCache.has(key.replace('sb_img_', 'sb_thumb_')));
-
-  let loaded = 0;
-  const total = thumbKeys.length + imgKeysWithoutThumb.length;
-
-  // Report initial progress
-  if (onProgress && total > 0) onProgress(0, total);
-
-  // Thumbnails counted as already loaded
-  loaded = thumbKeys.length;
-  if (onProgress && total > 0) onProgress(loaded, total);
-
-  await runBatched(imgKeysWithoutThumb, async (key) => {
-    const tKey = key.replace('sb_img_', 'sb_thumb_');
-    const val = await get(key);
-    if (val) {
-      const url = val instanceof Blob ? URL.createObjectURL(val) : val;
-      memCache.set(key, url);
-      memCache.set(tKey, url); // use full image as thumb initially
-
-      // Generate and persist proper thumbnail (awaited so it's ready before render)
-      try {
-        const tBlob = await createThumbnail(val);
-        if (tBlob && tBlob instanceof Blob) {
-          const thumbUrl = URL.createObjectURL(tBlob);
-          memCache.set(tKey, thumbUrl);
-          set(tKey, tBlob).catch(() => {}); // persist in background
+  if (imgKeysWithoutThumb.length > 0) {
+    const backfill = () => {
+      runBatched(imgKeysWithoutThumb, async (key) => {
+        const tKey = key.replace('sb_img_', 'sb_thumb_');
+        const val = await get(key);
+        if (!val) return;
+        const url = val instanceof Blob ? URL.createObjectURL(val) : val;
+        // Only use the full image as a thumb if no thumb arrived meanwhile.
+        if (!memCache.has(tKey)) memCache.set(key, url);
+        if (!memCache.has(tKey)) memCache.set(tKey, url);
+        try {
+          const tBlob = await createThumbnail(val);
+          if (tBlob && tBlob instanceof Blob) {
+            const thumbUrl = URL.createObjectURL(tBlob);
+            const prevThumb = memCache.get(tKey);
+            memCache.set(tKey, thumbUrl);
+            if (prevThumb && prevThumb !== url) revokeBlobUrl(prevThumb);
+            set(tKey, tBlob).catch(() => {});
+          }
+        } catch {
+          // thumbnail generation failed, full image stays as fallback
         }
-      } catch {
-        // thumbnail generation failed, full image is already cached as fallback
-      }
+      }, 4).catch(() => {});
+    };
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(backfill, { timeout: 2000 });
+    } else {
+      setTimeout(backfill, 0);
     }
-    loaded++;
-    if (onProgress && total > 0) onProgress(loaded, total);
-  });
+  }
 };
 
 /** Synchronous, instantaneous thumbnail retrieval for the journal grid */
@@ -187,10 +233,16 @@ export const getStoredImgAsync = async (weekId, dayName) => {
   const cached = memCache.get(imgKey(weekId, dayName));
   if (cached) return cached === 'DELETED' ? null : cached;
 
-  let val = await get(imgKey(weekId, dayName));
+  const val = await get(imgKey(weekId, dayName));
   if (!val) return null;
 
-  const url = val instanceof Blob ? URL.createObjectURL(val) : val;
+  // Stored value may be a Blob (new, lossless) or a data-URL string
+  // (legacy uploads, stored before the Blob migration). Convert the
+  // string losslessly to a Blob — do NOT re-compress it.
+  const blob = typeof val === 'string' && val.startsWith('data:image')
+    ? dataURLtoBlob(val)
+    : val;
+  const url = blob instanceof Blob ? URL.createObjectURL(blob) : blob;
   memCache.set(imgKey(weekId, dayName), url);
   return url;
 };
@@ -199,37 +251,55 @@ export const setStoredImg = async (weekId, dayName, val) => {
   const kImg = imgKey(weekId, dayName);
   const kThumb = thumbKey(weekId, dayName);
 
-  if (val != null) {
-    const displayUrl = val instanceof Blob ? URL.createObjectURL(val) : val;
-    memCache.set(kImg, displayUrl);
-    memCache.set(kThumb, displayUrl);
-    
-    // Save original image
-    set(kImg, val);
-
-    // Create and save optimized thumbnail for the grid
-    try {
-      const thumb = await createThumbnail(val);
-      if (thumb && thumb instanceof Blob) {
-        const thumbUrl = URL.createObjectURL(thumb);
-        memCache.set(kThumb, thumbUrl);
-        set(kThumb, thumb);
-      }
-    } catch (e) {
-      console.warn('Could not generate thumbnail:', e);
-    }
-
-    return displayUrl;
-  } else {
+  // Delete path: null, undefined, or the 'DELETED' sentinel used by callers.
+  if (val == null || val === 'DELETED') {
+    revokeBlobUrl(memCache.get(kImg));
+    revokeBlobUrl(memCache.get(kThumb));
     memCache.set(kImg, 'DELETED');
     memCache.set(kThumb, 'DELETED');
     del(kImg);
     del(kThumb);
     return null;
   }
+
+  // Normalise to a Blob WITHOUT touching the pixels: a File/Blob is stored
+  // as-is; a data-URL string (lossless FileReader output, or a legacy
+  // stored value) is converted byte-for-byte to a Blob. No resize, no
+  // re-encode — the IndexedDB value is the original file.
+  const blob = val instanceof Blob
+    ? val
+    : (typeof val === 'string' && val.startsWith('data:image') ? dataURLtoBlob(val) : null);
+  if (!blob) return null;
+
+  revokeBlobUrl(memCache.get(kImg));
+  revokeBlobUrl(memCache.get(kThumb));
+  const displayUrl = URL.createObjectURL(blob);
+  memCache.set(kImg, displayUrl);
+  memCache.set(kThumb, displayUrl); // grid placeholder until the real thumb lands
+
+  // Save original image (Blob, lossless). Awaited — the old fire-and-forget
+  // write could still be in flight when the user navigated away / reloaded,
+  // silently losing the upload.
+  await set(kImg, blob);
+
+  // Create and save optimised thumbnail for the grid ONLY.
+  try {
+    const thumb = await createThumbnail(blob);
+    if (thumb && thumb instanceof Blob) {
+      const thumbUrl = URL.createObjectURL(thumb);
+      memCache.set(kThumb, thumbUrl);
+      await set(kThumb, thumb);
+    }
+  } catch (e) {
+    console.warn('Could not generate thumbnail:', e);
+  }
+
+  return displayUrl;
 };
 
 export const clearStoredImg = (weekId, dayName) => {
+  revokeBlobUrl(memCache.get(imgKey(weekId, dayName)));
+  revokeBlobUrl(memCache.get(thumbKey(weekId, dayName)));
   memCache.delete(imgKey(weekId, dayName));
   memCache.delete(thumbKey(weekId, dayName));
   del(imgKey(weekId, dayName));
@@ -243,32 +313,33 @@ export const resolveImg = (weekId, dayName, staticImg) => {
 };
 
 export const resolveImgAsync = async (weekId, dayName, staticImg) => {
-  return resolveImg(weekId, dayName, staticImg);
+  // Sync first (already-cached full image), then fall back to an async
+  // IndexedDB load of the FULL image — never silently return the 480px
+  // thumbnail as if it were the full image. Previously this just called
+  // resolveImg(), so callers that used it still got the thumbnail.
+  const sync = resolveImg(weekId, dayName, null);
+  if (sync) return sync;
+  const asyncImg = await getStoredImgAsync(weekId, dayName);
+  return asyncImg ?? staticImg ?? null;
 };
 
 export const fileToDataUrl = async (file) => {
-  try {
-    const options = {
-      maxSizeMB: 1,
-      maxWidthOrHeight: 1920,
-      useWebWorker: true,
-    };
-    const compressedFile = await imageCompression(file, options);
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(compressedFile);
-    });
-  } catch (error) {
-    console.error('Image compression failed:', error);
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
+  // LOSSLESS by design. This used to be a plain FileReader pass-through
+  // (initial commit + 753f9cc). 8794d9b routed it through
+  // browser-image-compression { maxSizeMB: 1, maxWidthOrHeight: 1920 },
+  // which downscaled any screenshot wider than 1920px and re-encoded it
+  // lossily on EVERY upload — and the compressed result was then stored,
+  // so the original quality was unrecoverable. Do not re-add compression
+  // here: the grid thumbnail is generated separately by createThumbnail().
+  // Kept async + data-URL shaped so Quill note embeds (which store HTML
+  // strings) keep working; chart uploads should pass the File/Blob
+  // directly to setStoredImg() instead, which stores the Blob as-is.
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 };
 
 /* ─── Remarks (stored as HTML string) ─── */
@@ -389,21 +460,11 @@ const blobToDataURL = (blob) =>
     reader.readAsDataURL(blob);
   });
 
-/**
- * Convert a data-URL string directly to a Blob using atob + Uint8Array.
- * Replaces the previous fetch(dataURL) anti-pattern, which routed every
- * image through the full browser network stack (slow, failure-prone, and
- * unable to handle large payloads without freezing).
- */
-const dataURLtoBlob = (dataURL) => {
-  const comma = dataURL.indexOf(',');
-  const mime = dataURL.slice(5, dataURL.indexOf(';'));
-  const b64 = dataURL.slice(comma + 1);
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-};
+// dataURLtoBlob() is defined (hoisted) near the top of this file so
+// getStoredImgAsync / setStoredImg can use it. It replaces the previous
+// fetch(dataURL) anti-pattern, which routed every image through the full
+// browser network stack (slow, failure-prone, and unable to handle large
+// payloads without freezing).
 
 export const exportDatabase = async (onProgress) => {
   const allEntries = await entries();

@@ -9,6 +9,19 @@
  *   useLenis({ wrapperRef, contentRef });
  *
  * Returns the Lenis instance ref so callers can call lenis.scrollTo() etc.
+ *
+ * SMOOTH-SCROLL NOTES (regression fix, see BUG-REPORT.md):
+ * - Lenis 1.3's built-in `autoRaf` is used instead of a hand-rolled
+ *   requestAnimationFrame loop. The old loop ticked `lenis.raf()` every
+ *   frame unconditionally, even when nothing was scrolling.
+ * - `duration` default is 0.9s (was 1.2s). 1.2s felt laggy / floaty and
+ *   made Virtuoso re-render rows for over a second after every wheel
+ *   flick. 0.9s with Lenis' default exponential-out easing still feels
+ *   smooth without trailing behind the user's hand.
+ * - Callers that restore scroll position MUST use `lenis.scrollTo(x, {
+ *   immediate: true, force: true })` instead of setting
+ *   `container.scrollTop` directly: Lenis owns the scroll position and
+ *   will animate back / fight a direct assignment.
  */
 import { useEffect, useRef } from 'react';
 import Lenis from 'lenis';
@@ -17,7 +30,7 @@ import Lenis from 'lenis';
  * @param {object} [options]
  * @param {React.RefObject<HTMLElement>} [options.wrapperRef]
  * @param {React.RefObject<HTMLElement>} [options.contentRef]
- * @param {number}   [options.duration=1.2]
+ * @param {number}   [options.duration=0.9]
  * @param {boolean}  [options.smoothWheel=true]
  * @param {boolean}  [options.syncTouch=false]
  * @param {'vertical'|'horizontal'|'both'} [options.orientation='vertical']
@@ -30,7 +43,7 @@ export function useLenis(options = {}) {
   const {
     wrapperRef,
     contentRef,
-    duration = 1.2,
+    duration = 0.9,
     smoothWheel = true,
     syncTouch = false,
     orientation = 'vertical',
@@ -51,19 +64,13 @@ export function useLenis(options = {}) {
       smoothWheel,
       syncTouch,
       orientation,
+      // Lenis runs its own rAF loop; no manual tick needed.
+      autoRaf: true,
       ...(wrapperEl ? { wrapper: wrapperEl, content: contentEl } : {}),
     };
 
     const lenis = new Lenis(lenisOpts);
     lenisRef.current = lenis;
-
-    // Tick Lenis every frame
-    let rafId;
-    const tick = (time) => {
-      lenis.raf(time);
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
 
     // Wheel guard: pause/resume Lenis for specific events (e.g. Ctrl+Wheel)
     let onWheel;
@@ -77,7 +84,6 @@ export function useLenis(options = {}) {
     }
 
     return () => {
-      cancelAnimationFrame(rafId);
       lenis.destroy();
       lenisRef.current = null;
       if (onWheel) {
