@@ -25,4 +25,11 @@ describe('Storage utility (Tags)', () => {
     const tags = getTags('week-1', 'Monday');
     expect(tags).toEqual([]);
   });
+
+  it('should store and synchronously retrieve image thumbnails', async () => {
+    const { getStoredThumb, setStoredImg } = await import('./storage');
+    await setStoredImg('week-test', 'Tuesday', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+    const thumb = getStoredThumb('week-test', 'Tuesday');
+    expect(thumb).toBeTruthy();
+  });
 });

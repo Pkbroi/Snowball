@@ -1,189 +1,32 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
+import { useLenis } from '../hooks/useLenis.js';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import { Virtuoso } from 'react-virtuoso';
+import ReactQuill from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
 import { trades } from '../data/trades.js';
 import {
   resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getStoredImgAsync,
+  getStoredImg, getStoredThumb,
   getRemarks, setRemarks, getRemarksText,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate
 } from '../data/storage.js';
 
-/* ═══════════════════════════════════════════
-   Global IntersectionObserver for Lazy Loading
-═══════════════════════════════════════════ */
-let globalObserver = null;
-const observerCallbacks = new Map();
 
-function getGlobalObserver() {
-  if (!globalObserver) {
-    globalObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const cb = observerCallbacks.get(entry.target);
-          if (cb) {
-            cb();
-            globalObserver.unobserve(entry.target);
-            observerCallbacks.delete(entry.target);
-          }
-        }
-      });
-    }, { rootMargin: '300px' });
-  }
-  return globalObserver;
-}
-
-function observeElement(el, callback) {
-  observerCallbacks.set(el, callback);
-  getGlobalObserver().observe(el);
-}
-
-function unobserveElement(el) {
-  observerCallbacks.delete(el);
-  if (globalObserver) globalObserver.unobserve(el);
-}
-
-/* ═══════════════════════════════════════════
-   Shared rich-editor DOM helpers
-═══════════════════════════════════════════ */
-function attachResizeHandles(wrapper, img) {
-  const handles = [
-    { dir: 'n', css: 'top:-5px;left:50%;transform:translateX(-50%);width:44px;height:10px;cursor:n-resize;' },
-    { dir: 'e', css: 'top:50%;right:-5px;transform:translateY(-50%);width:10px;height:44px;cursor:e-resize;' },
-    { dir: 's', css: 'bottom:-5px;left:50%;transform:translateX(-50%);width:44px;height:10px;cursor:s-resize;' },
-    { dir: 'w', css: 'top:50%;left:-5px;transform:translateY(-50%);width:10px;height:44px;cursor:w-resize;' },
-  ];
-  handles.forEach(({ dir, css }) => {
-    const h = document.createElement('span');
-    h.dataset.resizeDir = dir;
-    h.style.cssText = `position:absolute;${css}background:#6b7280;border-radius:6px;opacity:0;transition:opacity 0.15s;z-index:20;`;
-    h.addEventListener('mousedown', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const sx = e.clientX, sy = e.clientY, sw = img.offsetWidth, sh = img.offsetHeight;
-      const mv = (ev) => {
-        const dx = ev.clientX - sx, dy = ev.clientY - sy;
-        if (dir === 'e') img.style.width  = `${Math.max(60, sw + dx)}px`;
-        if (dir === 'w') img.style.width  = `${Math.max(60, sw - dx)}px`;
-        if (dir === 's') img.style.height = `${Math.max(40, sh + dy)}px`;
-        if (dir === 'n') img.style.height = `${Math.max(40, sh - dy)}px`;
-      };
-      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
-      document.addEventListener('mousemove', mv);
-      document.addEventListener('mouseup', up);
-    });
-    wrapper.appendChild(h);
-  });
-  const show = () => wrapper.querySelectorAll('[data-resize-dir]').forEach(h => (h.style.opacity = '1'));
-  const hide = () => wrapper.querySelectorAll('[data-resize-dir]').forEach(h => (h.style.opacity = '0'));
-  wrapper.addEventListener('mouseenter', show);
-  wrapper.addEventListener('mouseleave', hide);
-}
-
-function insertResizableImage(src, editor) {
-  if (!editor) return;
-  editor.focus();
-  const wrapper = document.createElement('span');
-  wrapper.contentEditable = 'false';
-  wrapper.style.cssText = 'display:inline-block;position:relative;line-height:0;margin:6px 2px;vertical-align:middle;user-select:none;';
-  const img = document.createElement('img');
-  img.src = src; img.draggable = false;
-  img.style.cssText = 'display:block;width:320px;height:auto;border-radius:4px;';
-  wrapper.appendChild(img);
-  attachResizeHandles(wrapper, img);
-  const sel = window.getSelection();
-  if (sel?.rangeCount > 0) {
-    const range = sel.getRangeAt(0);
-    range.deleteContents(); range.insertNode(wrapper);
-    const after = document.createRange();
-    after.setStartAfter(wrapper); after.collapse(true);
-    sel.removeAllRanges(); sel.addRange(after);
-  } else { editor.appendChild(wrapper); }
-}
-
-/* ─── Hook: rich editor (font-size menu + image paste) ─── */
-function useRichEditor(editorRef, onContentChange) {
-  const savedRange = useRef(null);
-  const [ctxMenu, setCtxMenu] = useState(null);
-  const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28];
-
-  const handleCtxMenu = useCallback((e) => {
-    e.preventDefault();
-    const sel = window.getSelection();
-    if (sel?.rangeCount > 0) savedRange.current = sel.getRangeAt(0).cloneRange();
-    setCtxMenu({ x: e.clientX, y: e.clientY });
-  }, []);
-
-  const dismissCtxMenu = useCallback(() => setCtxMenu(null), []);
-
-  const applyFontSize = useCallback((size) => {
-    setCtxMenu(null);
-    const el = editorRef.current;
-    if (!el) return;
-    el.focus();
-    if (savedRange.current) {
-      const sel = window.getSelection();
-      sel.removeAllRanges(); sel.addRange(savedRange.current);
-    }
-    const span = document.createElement('span');
-    span.style.fontSize = `${size}px`; span.style.lineHeight = '1.7';
-    span.appendChild(document.createTextNode('\u200B'));
-    const sel = window.getSelection();
-    if (sel?.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      range.collapse(true); range.insertNode(span);
-      const nr = document.createRange();
-      nr.setStart(span.firstChild, 1); nr.collapse(true);
-      sel.removeAllRanges(); sel.addRange(nr);
-    }
-    if (onContentChange) onContentChange();
-  }, [editorRef, onContentChange]);
-
-  const handlePaste = useCallback((e) => {
-    const imgItem = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'));
-    if (!imgItem) return;
-    e.preventDefault();
-    const blob = imgItem.getAsFile();
-    if (blob) {
-      fileToDataUrl(blob).then(dataUrl => {
-        insertResizableImage(dataUrl, editorRef.current);
-        if (onContentChange) onContentChange();
-      });
-    }
-  }, [editorRef, onContentChange]);
-
-  const CtxMenuEl = ctxMenu ? (
-    <div
-      className="fixed z-[70] layer-overlay rounded-lg py-1 shadow-xl min-w-[160px]"
-      style={{ top: ctxMenu.y, left: ctxMenu.x }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <p className="px-3 py-1 text-[10px] uppercase tracking-widest text-on-surface-variant font-label-sm border-b border-outline-variant mb-1">
-        Font size
-      </p>
-      {FONT_SIZES.map((size) => (
-        <button key={size} onClick={() => applyFontSize(size)}
-          className="w-full text-left px-4 py-1.5 text-[13px] font-label-md hover:bg-surface-bright transition-colors text-on-surface">
-          {size}px
-        </button>
-      ))}
-    </div>
-  ) : null;
-
-  return { handleCtxMenu, dismissCtxMenu, handlePaste, CtxMenuEl };
-}
 
 /* ═══════════════════════════════════════════
    Remarks Modal
 ═══════════════════════════════════════════ */
 function RemarksModal({ trade, onClose }) {
-  const editorRef = useRef(null);
+  const [content, setContent] = useState(() => getRemarks(trade.id) ?? trade.remarks ?? '');
   const [saveStatus, setSaveStatus] = useState('');
   const timeoutRef = useRef(null);
 
-  // Save on every keystroke
-  const persist = useCallback(() => {
-    const el = editorRef.current;
-    if (el) setRemarks(trade.id, el.innerHTML);
+  const handleChange = (val) => {
+    setContent(val);
+    setRemarks(trade.id, val);
 
     setSaveStatus('Saving...');
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -191,21 +34,14 @@ function RemarksModal({ trade, onClose }) {
       setSaveStatus('Saved ✓');
       timeoutRef.current = setTimeout(() => setSaveStatus(''), 2000);
     }, 500);
-  }, [trade.id]);
-
-  const { handleCtxMenu, dismissCtxMenu, handlePaste, CtxMenuEl } = useRichEditor(editorRef, persist);
-
-  // Init content
-  useEffect(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    el.innerHTML = getRemarks(trade.id) ?? trade.remarks ?? '';
-    el.focus();
-  }, [trade.id, trade.remarks]);
+  };
 
   // Escape closes
   useEffect(() => {
-    const fn = (e) => { if (e.key === 'Escape') onClose(); };
+    const fn = (e) => {
+      // Don't close if escaping out of Quill's link tooltip etc, but simple escape is fine if we aren't focused.
+      if (e.key === 'Escape') onClose();
+    };
     document.addEventListener('keydown', fn);
     return () => document.removeEventListener('keydown', fn);
   }, [onClose]);
@@ -215,12 +51,11 @@ function RemarksModal({ trade, onClose }) {
   return (
     <div
       className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); dismissCtxMenu(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-4xl layer-surface rounded-xl flex flex-col animate-expand"
+        className="w-full max-w-4xl layer-surface rounded-xl flex flex-col animate-expand remarks-modal-container"
         style={{ maxHeight: '90vh' }}
-        onClick={dismissCtxMenu}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-xl pt-xl pb-md shrink-0">
@@ -248,21 +83,25 @@ function RemarksModal({ trade, onClose }) {
         <div className="border-t border-[#222222] mx-xl shrink-0" />
 
         {/* Rich editor */}
-        <div
-          ref={editorRef}
-          contentEditable
-          suppressContentEditableWarning
-          onContextMenu={handleCtxMenu}
-          onPaste={handlePaste}
-          onInput={persist}
-          placeholder="Start writing… right-click to change font size, paste images"
-          spellCheck={false}
-          className="flex-1 overflow-y-auto bg-transparent text-on-surface focus:outline-none cursor-text custom-scrollbar px-xl py-md"
-          style={{ fontSize: '16px', lineHeight: 1.7, wordBreak: 'break-word', minHeight: '400px' }}
-        />
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+          <ReactQuill 
+            theme="snow"
+            value={content}
+            onChange={handleChange}
+            placeholder="Start writing… (formatting toolbar available)"
+            className="h-full min-h-[350px] text-on-surface"
+            modules={{
+              toolbar: [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                ['link', 'image'],
+                ['clean']
+              ]
+            }}
+          />
+        </div>
       </div>
-
-      {CtxMenuEl}
     </div>
   );
 }
@@ -270,7 +109,7 @@ function RemarksModal({ trade, onClose }) {
 /* ═══════════════════════════════════════════
    OutcomeBadge
 ═══════════════════════════════════════════ */
-function OutcomeBadge({ outcome }) {
+const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
   if (!outcome) return null;
   return (
     <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-[#222222]/50 z-10 ${
@@ -279,55 +118,62 @@ function OutcomeBadge({ outcome }) {
       {outcome}
     </div>
   );
-}
+});
 
 /* ═══════════════════════════════════════════
    DayCell
 ═══════════════════════════════════════════ */
-function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
+const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
   const navigate = useNavigate();
-  const [cellImg, setCellImg] = useState(() => day.img || null);
-  const [isVisible, setIsVisible] = useState(false);
+  // Synchronous, zero-latency retrieval from pre-cached memory!
+  const [cellImg, setCellImg] = useState(() => getStoredThumb(weekId, day.day) || day.img || null);
   const [dragging, setDragging] = useState(false);
   const cellRef = useRef(null);
-  
-  useEffect(() => {
-    const el = cellRef.current;
-    if (!el) return;
-    observeElement(el, () => setIsVisible(true));
-    return () => unobserveElement(el);
-  }, []);
 
+  // Sync if stored thumbnail or day image changes
   useEffect(() => {
-    if (!isVisible) return;
-    let active = true;
-    getStoredImgAsync(weekId, day.day).then(img => {
-      if (!active) return;
-      if (img !== undefined && img !== null) {
-        setCellImg(img);
-      } else if (day.img) {
-        setCellImg(day.img);
-      } else {
-        setCellImg(null);
-      }
-    });
-    return () => { active = false; };
-  }, [isVisible, weekId, day.day, day.img]);
+    const current = getStoredThumb(weekId, day.day) || day.img || null;
+    setCellImg(current);
+  }, [weekId, day.day, day.img]);
 
-  const notesText = getNotesText(weekId, day.day, day.notes ?? '');
-  const tags = getTags(weekId, day.day);
-  const matchesSearch = search && search.trim() !== '' && (notesText.toLowerCase().includes(search.toLowerCase()) || tags.some(t => t.toLowerCase().includes(search.toLowerCase())));
+  // Memoised search match: only recomputes when search query or cell identity changes,
+  // not on every parent re-render — eliminates O(n×5) string ops during typing.
+  const matchesSearch = useMemo(() => {
+    if (!search || !search.trim()) return false;
+    const q = search.trim().toLowerCase();
+    const notesText = getNotesText(weekId, day.day, day.notes ?? '');
+    if (notesText.toLowerCase().includes(q)) return true;
+    const tags = getTags(weekId, day.day);
+    return tags.some(t => t.toLowerCase().includes(q));
+  }, [search, weekId, day.day, day.notes]);
 
   const saveFile = useCallback(async (file) => {
     if (!file?.type.startsWith('image/')) return;
     const dataUrl = await fileToDataUrl(file);
-    setStoredImg(weekId, day.day, dataUrl);
-    setCellImg(dataUrl);
+    await setStoredImg(weekId, day.day, dataUrl);
+    setCellImg(getStoredThumb(weekId, day.day) || dataUrl);
   }, [weekId, day.day]);
 
   const goToDetail = useCallback(() => {
+    const container = document.querySelector('[data-testid="main-scroll-container"]');
+    if (container) {
+      sessionStorage.setItem('sb_scroll_top', container.scrollTop.toString());
+      sessionStorage.setItem('sb_scroll_left', container.scrollLeft.toString());
+    }
+    sessionStorage.setItem('sb_last_week_id', weekId);
+    sessionStorage.setItem('sb_last_day', day.day);
+
     navigate(`/trade/${weekId}`, {
-      state: { weekId, weekStart, weekEnd, remarks, search, day: { ...day, img: cellImg } },
+      state: { 
+        weekId, 
+        weekStart, 
+        weekEnd, 
+        remarks, 
+        search, 
+        day: { ...day, img: getStoredImg(weekId, day.day) || cellImg },
+        scrollLeft: container ? container.scrollLeft : undefined,
+        scrollTop: container ? container.scrollTop : undefined,
+      },
     });
   }, [navigate, weekId, weekStart, weekEnd, remarks, search, day, cellImg]);
 
@@ -347,14 +193,14 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-[#222222] overflow-hidden p-1 cursor-pointer transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+        className={`relative border-r border-[#222222] overflow-hidden p-1 cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-blue-900/60' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         title="Double-click to open detail"
       >
         <div className="absolute inset-1 border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
-          <img alt={`${day.day} chart`} src={cellImg} loading="lazy" decoding="async"
-            className="w-full h-full object-cover opacity-80 hover:opacity-100 transition-opacity" />
+          <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
+            className="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" />
           <OutcomeBadge outcome={day.outcome} />
         </div>
       </div>
@@ -365,7 +211,7 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-[#222222] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+      className={`relative border-r border-[#222222] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-blue-900/60' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -390,41 +236,41 @@ function DayCell({ day, weekId, weekStart, weekEnd, remarks, search }) {
       </div>
     </div>
   );
-}
+});
 
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search }) {
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, tableZoom = 1.0 }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
   // Resolved label (localStorage > static)
   const labelStored = getWeekLabel(trade.id);
-  const weekStart = labelStored?.weekStart ?? trade.weekStart;
-  const weekEnd   = labelStored?.weekEnd   ?? trade.weekEnd;
+  const [weekStart, setWeekStart] = useState(labelStored?.weekStart ?? trade.weekStart);
+  const [weekEnd, setWeekEnd] = useState(labelStored?.weekEnd ?? trade.weekEnd);
 
-  // Init week label
+  // Sync if trade.id changes (Virtuoso reuse)
   useEffect(() => {
-    if (startRef.current) startRef.current.innerText = weekStart;
-    if (endRef.current)   endRef.current.innerText   = weekEnd;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trade.id]);
+    const lbl = getWeekLabel(trade.id);
+    setWeekStart(lbl?.weekStart ?? trade.weekStart);
+    setWeekEnd(lbl?.weekEnd ?? trade.weekEnd);
+  }, [trade.id, trade.weekStart, trade.weekEnd]);
 
-  const saveLabel = () => {
-    setWeekLabel(trade.id, {
-      weekStart: startRef.current?.innerText.trim() || trade.weekStart,
-      weekEnd:   endRef.current?.innerText.trim()   || trade.weekEnd,
-    });
+  const saveLabel = (type, val) => {
+    const newStart = type === 'start' ? val : weekStart;
+    const newEnd = type === 'end' ? val : weekEnd;
+    setWeekLabel(trade.id, { weekStart: newStart || trade.weekStart, weekEnd: newEnd || trade.weekEnd });
   };
+
+  const colStyle = gridCols || '96px repeat(5, minmax(225px, 1fr)) 260px';
 
   return (
     <div 
       className="grid hover:bg-surface-container-high transition-colors group w-full"
       data-testid={`week-row-${trade.id}`}
       style={{ 
-        gridTemplateColumns: '96px repeat(5, minmax(225px, 1fr)) 260px', 
-        minHeight: '144px',
+        gridTemplateColumns: colStyle, 
       }}
     >
 
@@ -441,52 +287,52 @@ function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search }) {
             <span className="material-symbols-outlined text-[14px]">delete</span>
           </button>
         )}
-        <div
+        <input
           ref={startRef}
-          contentEditable
-          suppressContentEditableWarning
-          onBlur={saveLabel}
+          type="text"
+          placeholder="Month"
+          value={weekStart}
+          onChange={(e) => setWeekStart(e.target.value)}
+          onBlur={(e) => saveLabel('start', e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); endRef.current?.focus(); return; }
-            if (e.key === 'ArrowDown') {
-              // move to second line only when caret is on the last visual line
-              const sel = window.getSelection();
-              if (!sel || !sel.rangeCount) return;
-              const range = sel.getRangeAt(0);
-              const rects = range.getClientRects();
-              const elRect = e.currentTarget.getBoundingClientRect();
-              const caretBottom = rects.length ? rects[rects.length - 1].bottom : 0;
-              if (caretBottom >= elRect.bottom - 2) {
-                e.preventDefault();
-                endRef.current?.focus();
+            if (e.key === 'Enter' || e.key === 'ArrowDown') { 
+              e.preventDefault(); 
+              e.stopPropagation();
+              if (endRef.current) {
+                endRef.current.focus();
+                const len = endRef.current.value.length;
+                endRef.current.setSelectionRange(len, len);
               }
             }
           }}
           title="Click to edit"
-          className="font-label-md text-label-md text-on-surface focus:outline-none focus:bg-surface-container rounded px-0.5 cursor-text"
+          className="font-label-md text-label-md text-on-surface bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-1 py-0.5 w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
         />
-        <div
+        <input
           ref={endRef}
-          contentEditable
-          suppressContentEditableWarning
-          onBlur={saveLabel}
+          type="text"
+          placeholder="Dates"
+          value={weekEnd}
+          onChange={(e) => setWeekEnd(e.target.value)}
+          onBlur={(e) => saveLabel('end', e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); return; }
+            if (e.key === 'Enter') { 
+              e.preventDefault(); 
+              e.stopPropagation();
+              e.currentTarget.blur(); 
+            }
             if (e.key === 'ArrowUp') {
-              const sel = window.getSelection();
-              if (!sel || !sel.rangeCount) return;
-              const range = sel.getRangeAt(0);
-              const rects = range.getClientRects();
-              const elRect = e.currentTarget.getBoundingClientRect();
-              const caretTop = rects.length ? rects[0].top : Infinity;
-              if (caretTop <= elRect.top + 2) {
-                e.preventDefault();
-                startRef.current?.focus();
+              e.preventDefault();
+              e.stopPropagation();
+              if (startRef.current) {
+                startRef.current.focus();
+                const len = startRef.current.value.length;
+                startRef.current.setSelectionRange(len, len);
               }
             }
           }}
           title="Click to edit"
-          className="font-label-md text-label-md text-on-surface-variant opacity-70 focus:outline-none focus:bg-surface-container rounded px-0.5 cursor-text"
+          className="font-label-md text-label-md text-on-surface-variant opacity-70 bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-1 py-0.5 w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
         />
       </div>
 
@@ -521,7 +367,7 @@ function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search }) {
       </div>
     </div>
   );
-}
+});
 
 /* ═══════════════════════════════════════════
    Settings Modal
@@ -529,46 +375,88 @@ function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search }) {
 function SettingsModal({ onClose }) {
   const fileInputRef = useRef(null);
 
+  /**
+   * op: { status: 'idle' | 'exporting' | 'importing', step: string, done: number, total: number }
+   * Controls all loading states and progress rendering.
+   */
+  const [op, setOp] = useState({ status: 'idle', step: '', done: 0, total: 0 });
+  const isBusy = op.status !== 'idle';
+
   useEffect(() => {
     const handleEsc = (e) => {
-      if (e.key === 'Escape') onClose();
+      // Block Escape while an operation is running to prevent accidental cancellation
+      if (e.key === 'Escape' && !isBusy) onClose();
     };
     document.addEventListener('keydown', handleEsc);
     return () => document.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
+  }, [onClose, isBusy]);
 
   const handleExport = async () => {
     try {
-      const jsonString = await exportDatabase();
+      setOp({ status: 'exporting', step: 'Reading database…', done: 0, total: 0 });
+      // Yield so React can paint the loading state before the async work begins
+      await new Promise(r => setTimeout(r, 0));
+
+      const jsonString = await exportDatabase((done, total) => {
+        setOp(s => ({ ...s, step: `Exporting images… ${done} / ${total}`, done, total }));
+      });
+
+      setOp(s => ({ ...s, step: 'Preparing download…', done: s.total, total: s.total }));
+      await new Promise(r => setTimeout(r, 0));
+
       const blob = new Blob([jsonString], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `snowball-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
-      URL.revokeObjectURL(url);
+      // Small delay before revoking so the browser has time to pick up the download
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
     } catch (err) {
-      console.error(err);
-      alert('Export failed.');
+      console.error('Export failed:', err);
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
+      alert(`Export failed: ${err.message}`);
     }
   };
 
   const handleImport = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Reset the input so the same file can be re-selected if needed
+    e.target.value = '';
     try {
+      setOp({ status: 'importing', step: 'Reading file…', done: 0, total: 0 });
+      await new Promise(r => setTimeout(r, 0));
+
       const text = await file.text();
-      await importDatabase(text);
-      alert('Import successful! App will reload.');
+
+      setOp(s => ({ ...s, step: 'Parsing backup data…' }));
+      // Yield before the synchronous JSON.parse so the UI can update
+      await new Promise(r => setTimeout(r, 0));
+
+      await importDatabase(text, (done, total) => {
+        setOp(s => ({
+          ...s,
+          step: `Restoring images… ${done} / ${total}`,
+          done,
+          total,
+        }));
+      });
+
+      setOp(s => ({ ...s, step: 'Finishing up…' }));
       window.location.reload();
     } catch (err) {
-      console.error(err);
-      alert('Import failed. Invalid format or corrupted file.');
+      console.error('Import failed:', err);
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
+      alert(`Import failed: ${err.message}`);
     }
   };
 
   const handleFormat = async () => {
-    if (window.confirm("Are you sure you want to delete all data? This action cannot be undone.")) {
+    if (isBusy) return;
+    if (window.confirm('Are you sure you want to delete all data? This action cannot be undone.')) {
       try {
         await formatDatabase();
         alert('All data wiped successfully. App will reload.');
@@ -580,50 +468,123 @@ function SettingsModal({ onClose }) {
     }
   };
 
+  const pct = op.total > 0 ? Math.round((op.done / op.total) * 100) : 0;
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget && !isBusy) onClose(); }}
+    >
       <div className="w-full max-w-md layer-surface rounded-xl flex flex-col p-xl gap-4">
+        {/* Header */}
         <div className="flex items-center justify-between">
           <h2 className="font-headline-sm text-headline-sm text-on-surface">Settings</h2>
-          <button onClick={onClose} className="p-2 hover:bg-surface-bright rounded-full text-on-surface-variant">
+          <button
+            onClick={() => { if (!isBusy) onClose(); }}
+            disabled={isBusy}
+            className="p-2 hover:bg-surface-bright rounded-full text-on-surface-variant disabled:opacity-30 disabled:cursor-not-allowed transition-opacity"
+          >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
         </div>
         <div className="border-t border-outline-variant" />
-        
-        <div className="flex flex-col gap-4 py-2">
-          <div>
-            <h3 className="font-label-lg text-label-lg text-on-surface">Export Database</h3>
-            <p className="text-on-surface-variant text-[13px] mb-3">Download all your journals, remarks, and charts as a single portable file.</p>
-            <button onClick={handleExport} className="w-full py-2 bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant rounded-lg text-on-surface font-label-md flex items-center justify-center gap-2 transition-colors">
-              <span className="material-symbols-outlined text-[18px]">download</span> Export as JSON
-            </button>
-          </div>
-          
-          <div className="border-t border-outline-variant" />
 
-          <div>
-            <h3 className="font-label-lg text-label-lg text-on-surface">Import Database</h3>
-            <p className="text-on-surface-variant text-[13px] mb-3 text-error">Warning: Importing will overwrite your current local database!</p>
-            <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleImport} />
-            <button onClick={() => fileInputRef.current?.click()} className="w-full py-2 bg-red-900/20 hover:bg-red-900/40 border border-error/50 rounded-lg text-error font-label-md flex items-center justify-center gap-2 transition-colors">
-              <span className="material-symbols-outlined text-[18px]">upload</span> Import JSON Backup
-            </button>
-          </div>
+        {/* ── Progress panel (shown while exporting or importing) ── */}
+        {isBusy && (
+          <div className="flex flex-col items-center gap-3 py-4 px-2">
+            <span className="material-symbols-outlined text-[32px] text-primary animate-spin select-none">
+              progress_activity
+            </span>
+            <p className="text-on-surface font-label-md text-center leading-snug">{op.step}</p>
 
-          <div className="border-t border-outline-variant" />
+            {op.total > 0 && (
+              <div className="w-full flex flex-col gap-1.5">
+                {/* Progress bar */}
+                <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300 ease-out"
+                    style={{
+                      width: `${pct}%`,
+                      background: 'linear-gradient(90deg, var(--md-sys-color-primary, #4a8fff), var(--md-sys-color-tertiary, #1a437e))',
+                    }}
+                  />
+                </div>
+                {/* Count + percentage */}
+                <div className="flex justify-between text-[11px] text-on-surface-variant tabular-nums">
+                  <span>{op.done} / {op.total}</span>
+                  <span>{pct}%</span>
+                </div>
+              </div>
+            )}
 
-          <div>
-            <h3 className="font-label-lg text-label-lg text-on-surface">Format All Data</h3>
-            <p className="text-on-surface-variant text-[13px] mb-3 text-error">Warning: This will permanently wipe all your journals, remarks, and charts.</p>
-            <button onClick={handleFormat} className="w-full py-2 bg-error text-on-error hover:bg-error/90 rounded-lg font-label-md flex items-center justify-center gap-2 transition-colors">
-              <span className="material-symbols-outlined text-[18px]">delete_forever</span> Wipe Clean
-            </button>
+            <p className="text-[11px] text-on-surface-variant text-center mt-1">
+              {op.status === 'exporting' ? 'Please keep this window open while exporting.' : 'Please keep this window open while importing.'}
+            </p>
           </div>
-        </div>
+        )}
+
+        {/* ── Normal controls (hidden while busy) ── */}
+        {!isBusy && (
+          <div className="flex flex-col gap-4 py-2">
+            {/* Export */}
+            <div>
+              <h3 className="font-label-lg text-label-lg text-on-surface">Export Database</h3>
+              <p className="text-on-surface-variant text-[13px] mb-3">
+                Download all your journals, remarks, and charts as a single portable file.
+                Images are exported at <strong>full quality</strong> — no re-compression.
+              </p>
+              <button
+                onClick={handleExport}
+                className="w-full py-2 bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant rounded-lg text-on-surface font-label-md flex items-center justify-center gap-2 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[18px]">download</span>
+                Export as JSON
+              </button>
+            </div>
+
+            <div className="border-t border-outline-variant" />
+
+            {/* Import */}
+            <div>
+              <h3 className="font-label-lg text-label-lg text-on-surface">Import Database</h3>
+              <p className="text-on-surface-variant text-[13px] mb-1 text-error">
+                Warning: Importing will overwrite your current local database!
+              </p>
+              <p className="text-on-surface-variant text-[12px] mb-3">
+                A progress bar will appear — do not close the app until it completes.
+              </p>
+              <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleImport} />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-2 bg-red-900/20 hover:bg-red-900/40 border border-error/50 rounded-lg text-error font-label-md flex items-center justify-center gap-2 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[18px]">upload</span>
+                Import JSON Backup
+              </button>
+            </div>
+
+            <div className="border-t border-outline-variant" />
+
+            {/* Format */}
+            <div>
+              <h3 className="font-label-lg text-label-lg text-on-surface">Format All Data</h3>
+              <p className="text-on-surface-variant text-[13px] mb-3 text-error">
+                Warning: This will permanently wipe all your journals, remarks, and charts.
+              </p>
+              <button
+                onClick={handleFormat}
+                className="w-full py-2 bg-error text-on-error hover:bg-error/90 rounded-lg font-label-md flex items-center justify-center gap-2 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[18px]">delete_forever</span>
+                Wipe Clean
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
+
 }
 
 /* ═══════════════════════════════════════════
@@ -727,6 +688,7 @@ function GoToModal({ onClose, onApply }) {
 export default function WeeklyJournal() {
   const [allTrades, setAllTrades] = useState(() => [...trades, ...getExtraWeeks()]);
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const search = searchParams.get('q') || '';
   const setSearch = (val) => {
     if (val) {
@@ -738,57 +700,188 @@ export default function WeeklyJournal() {
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
-  const [dateFilter, setDateFilter] = useState(null);
+  const [dateFilter, setDateFilter] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('sb_date_filter');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [tableZoom, setTableZoom] = useState(() => {
     const saved = sessionStorage.getItem('sb_zoom');
-    return saved ? parseFloat(saved) : 1.0;
+    const parsed = saved ? parseFloat(saved) : 1.0;
+    return !isNaN(parsed) && parsed >= 0.5 && parsed <= 4.0 ? parsed : 1.0;
   });
+
   const gridBottomRef = useRef(null);
+  const virtuosoRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  const scrollContentRef = useRef(null);  // Lenis content node (inner wrapper)
+  // rAF handle used to throttle sessionStorage writes in handleScroll
+  const scrollRAF = useRef(null);
+  const [scrollParent, setScrollParent] = useState(null);
   const scrollPos = useRef({ top: 0, left: 0 });
+
+  const targetWeekId = location.state?.returnWeekId || sessionStorage.getItem('sb_last_week_id');
+  const targetDay = location.state?.returnDay || sessionStorage.getItem('sb_last_day');
+
+  const isRestoringRef = useRef(Boolean(sessionStorage.getItem('sb_scroll_left') || sessionStorage.getItem('sb_scroll_top') || targetWeekId));
+
+  // Lenis smooth scroll — skip Ctrl+Wheel (used for zoom)
+  useLenis({
+    wrapperRef: scrollContainerRef,
+    contentRef: scrollContentRef,
+    orientation: 'both',
+    duration: 1.1,
+    smoothWheel: true,
+    shouldPrevent: (e) => e.ctrlKey || e.metaKey,
+  });
+
+  // Ref callback — called by React with the DOM node once it mounts
+  const scrollContainerRefCallback = useCallback((node) => {
+    if (node) {
+      scrollContainerRef.current = node;
+      setScrollParent(node);
+    }
+  }, []);
+
+  // Multi-frame restoration to ensure Virtuoso and layout dimensions have settled
+  useEffect(() => {
+    if (!scrollParent) return;
+
+    const savedLeft = sessionStorage.getItem('sb_scroll_left');
+    const savedTop = sessionStorage.getItem('sb_scroll_top');
+    const targetLeft = savedLeft ? parseFloat(savedLeft) : null;
+    const targetTop = savedTop ? parseFloat(savedTop) : null;
+
+    if (targetLeft === null && targetTop === null && !targetWeekId) {
+      isRestoringRef.current = false;
+      return;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 15; // ~250ms at 60fps — enough for Virtuoso's initial render
+    let animationFrameId = null;
+
+    const tryRestore = () => {
+      attempts++;
+      const container = scrollParent;
+      if (!container) return;
+
+      let cellEl = null;
+      if (targetWeekId && targetDay) {
+        cellEl = container.querySelector(`[data-testid="day-cell-${targetWeekId}-${targetDay}"]`);
+      }
+
+      let restored = false;
+
+      // 1. Restore scrollLeft if grid has expanded
+      if (targetLeft !== null && !isNaN(targetLeft) && container.scrollWidth > container.clientWidth) {
+        container.scrollLeft = targetLeft;
+        restored = true;
+      }
+
+      // 2. Restore scrollTop if list has rendered
+      if (targetTop !== null && !isNaN(targetTop) && container.scrollHeight > container.clientHeight) {
+        container.scrollTop = targetTop;
+        restored = true;
+      }
+
+      // 3. If cell element is located, ensure it is in view and highlight it
+      if (cellEl) {
+        const cellRect = cellEl.getBoundingClientRect();
+        const contRect = container.getBoundingClientRect();
+        const inHView = cellRect.left >= contRect.left && cellRect.right <= contRect.right;
+        const inVView = cellRect.top >= contRect.top && cellRect.bottom <= contRect.bottom;
+
+        if (!inHView || !inVView || targetLeft === null) {
+          cellEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+
+        cellEl.classList.add('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-black');
+        setTimeout(() => {
+          cellEl?.classList.remove('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-black');
+        }, 2000);
+
+        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
+        isRestoringRef.current = false;
+        return;
+      }
+
+      if (restored && !targetWeekId && attempts >= 3) {
+        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
+        isRestoringRef.current = false;
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        animationFrameId = requestAnimationFrame(tryRestore);
+      } else {
+        if (targetLeft !== null && !isNaN(targetLeft)) container.scrollLeft = targetLeft;
+        if (targetTop !== null && !isNaN(targetTop)) container.scrollTop = targetTop;
+        scrollPos.current = { top: container.scrollTop, left: container.scrollLeft };
+        isRestoringRef.current = false;
+      }
+    };
+
+    animationFrameId = requestAnimationFrame(tryRestore);
+
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [scrollParent, targetWeekId, targetDay]);
+
+  // Persist scroll position on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollContainerRef.current && !isRestoringRef.current) {
+        sessionStorage.setItem('sb_scroll_top', scrollContainerRef.current.scrollTop.toString());
+        sessionStorage.setItem('sb_scroll_left', scrollContainerRef.current.scrollLeft.toString());
+      }
+    };
+  }, []);
 
   useEffect(() => {
     sessionStorage.setItem('sb_zoom', tableZoom.toString());
   }, [tableZoom]);
 
   useEffect(() => {
-    const savedTop = sessionStorage.getItem('sb_scroll_top');
-    const savedLeft = sessionStorage.getItem('sb_scroll_left');
-    if (scrollContainerRef.current) {
-      requestAnimationFrame(() => {
-        if (scrollContainerRef.current) {
-          if (savedTop) scrollContainerRef.current.scrollTop = parseFloat(savedTop);
-          if (savedLeft) scrollContainerRef.current.scrollLeft = parseFloat(savedLeft);
-        }
-      });
+    if (dateFilter) {
+      sessionStorage.setItem('sb_date_filter', JSON.stringify(dateFilter));
+    } else {
+      sessionStorage.removeItem('sb_date_filter');
     }
-    return () => {
-      sessionStorage.setItem('sb_scroll_top', scrollPos.current.top.toString());
-      sessionStorage.setItem('sb_scroll_left', scrollPos.current.left.toString());
-    };
-  }, []);
+  }, [dateFilter]);
 
   const handleScroll = useCallback((e) => {
-    scrollPos.current = { top: e.target.scrollTop, left: e.target.scrollLeft };
+    if (isRestoringRef.current) return;
+    const top = e.target.scrollTop;
+    const left = e.target.scrollLeft;
+    // Update the in-memory ref synchronously (safe — no layout triggered)
+    scrollPos.current = { top, left };
+    // rAF-throttle the sessionStorage writes: sessionStorage.setItem() is a
+    // synchronous main-thread call that can block the compositor and cause
+    // visible jank when fired at scroll frequency (60–120×/sec on fast devices).
+    if (scrollRAF.current) cancelAnimationFrame(scrollRAF.current);
+    scrollRAF.current = requestAnimationFrame(() => {
+      sessionStorage.setItem('sb_scroll_top', top.toString());
+      sessionStorage.setItem('sb_scroll_left', left.toString());
+      scrollRAF.current = null;
+    });
   }, []);
 
-  const zoomIn  = useCallback(() => setTableZoom(z => Math.min(4.0, parseFloat((z + 0.1).toFixed(1)))), []);
+  const zoomIn  = useCallback(() => setTableZoom(z => Math.min(3.0, parseFloat((z + 0.1).toFixed(1)))), []);
   const zoomOut = useCallback(() => setTableZoom(z => Math.max(0.5, parseFloat((z - 0.1).toFixed(1)))), []);
 
   /* ── Add new row ── */
   const addRow = useCallback(() => {
-    const today = new Date();
-    const dow   = today.getDay();
-    const diffToMon = dow === 0 ? -6 : 1 - dow;
-    const monday = new Date(today); monday.setDate(today.getDate() + diffToMon);
-    const friday = new Date(monday); friday.setDate(monday.getDate() + 4);
-    const fmt    = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
     const weekId  = `week-custom-${Date.now()}`;
     const newWeek = {
       id: weekId,
-      weekStart: fmt(monday),
-      weekEnd:   fmt(friday),
+      weekStart: '',
+      weekEnd:   '',
       remarks:   '',
       days: ['Monday','Tuesday','Wednesday','Thursday','Friday'].map((d) => ({
         day: d, img: null, outcome: null, notes: '', instrument: null, timeframe: null, session: null, rr: null,
@@ -847,43 +940,62 @@ export default function WeeklyJournal() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [addRow, zoomIn, zoomOut]);
 
-  /* ── Search filter & Date filter ── */
-  const filtered = allTrades.filter((t) => {
-    // 1. Date Filter Logic
-    if (dateFilter) {
-      let passesDateFilter = false;
-      const cellDates = t.days
-        .map(d => getTradeDate(t.id, d.day))
-        .filter(d => d !== '');
-      
-      if (cellDates.length > 0) {
-        if (dateFilter.type === 'date') {
-          // If any cell date >= selected date
-          if (cellDates.some(d => d >= dateFilter.date)) passesDateFilter = true;
-        } else if (dateFilter.type === 'range') {
-          // If any cell date is between from and to
-          if (cellDates.some(d => d >= dateFilter.from && d <= dateFilter.to)) passesDateFilter = true;
-        }
+  /* ── Ctrl+Wheel to Zoom ── */
+  useEffect(() => {
+    const handleWheel = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        if (e.deltaY > 0) zoomOut();
+        else zoomIn();
       }
-      if (!passesDateFilter) return false; // Filter out if no dates match or no dates are set
-    }
+    };
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleWheel);
+  }, [zoomIn, zoomOut]);
 
-    // 2. Search Logic
-    if (!search.trim()) return true;
-    const q   = search.toLowerCase();
-    const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
-    const rem = getRemarksText(t.id, t.remarks ?? '');
-    return (
-      lbl.weekStart.toLowerCase().includes(q) ||
-      lbl.weekEnd.toLowerCase().includes(q)   ||
-      rem.toLowerCase().includes(q)            ||
-      t.days.some((d) => {
-        const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
-        const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
-        return notesMatch || tagsMatch;
-      })
-    );
-  });
+  /* ── Search filter & Date filter (Memoized for high performance) ── */
+  const filtered = useMemo(() => {
+    return allTrades.filter((t) => {
+      // 1. Date Filter Logic
+      if (dateFilter) {
+        let passesDateFilter = false;
+        const cellDates = t.days
+          .map(d => getTradeDate(t.id, d.day))
+          .filter(d => d !== '');
+        
+        if (cellDates.length > 0) {
+          if (dateFilter.type === 'date') {
+            if (cellDates.some(d => d >= dateFilter.date)) passesDateFilter = true;
+          } else if (dateFilter.type === 'range') {
+            if (cellDates.some(d => d >= dateFilter.from && d <= dateFilter.to)) passesDateFilter = true;
+          }
+        }
+        if (!passesDateFilter) return false;
+      }
+
+      // 2. Search Logic
+      if (!search.trim()) return true;
+      const q   = search.toLowerCase();
+      const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
+      const rem = getRemarksText(t.id, t.remarks ?? '');
+      return (
+        lbl.weekStart.toLowerCase().includes(q) ||
+        lbl.weekEnd.toLowerCase().includes(q)   ||
+        rem.toLowerCase().includes(q)            ||
+        t.days.some((d) => {
+          const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
+          const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
+          return notesMatch || tagsMatch;
+        })
+      );
+    });
+  }, [allTrades, dateFilter, search]);
+
+  const initialIndex = useMemo(() => {
+    if (!targetWeekId) return 0;
+    const idx = filtered.findIndex((t) => t.id === targetWeekId);
+    return idx >= 0 ? idx : 0;
+  }, [filtered, targetWeekId]);
 
   return (
     <>
@@ -1000,54 +1112,82 @@ export default function WeeklyJournal() {
 
           {/* Workspace — scrolls only on the inner grid area */}
           <div 
-            ref={scrollContainerRef} 
+            ref={scrollContainerRefCallback}
+            data-testid="main-scroll-container"
             onScroll={handleScroll} 
             className="flex-1 overflow-auto custom-scrollbar w-full"
           >
-            <div className="w-full h-full">
+            <div ref={scrollContentRef} className="w-full h-full">
 
               {/* Grid */}
-              <div
-                style={{
-                  transformOrigin: 'top left',
-                  transform: `scale(${tableZoom})`,
-                  width: `${(100 / tableZoom).toFixed(4)}%`,
-                  marginBottom: `calc((${tableZoom} - 1) * 100%)`,
-                  transition: 'transform 0.15s ease, width 0.15s ease',
-                }}
-              >
-              <div className="bg-[#111111] border border-[#222222] rounded-xl shadow-sm flex flex-col min-w-[1481px] w-full overflow-auto custom-scrollbar">
-                {/* Header row */}
-                <div 
-                  className="grid border-b border-[#222222] bg-[#0a0a0a] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
-                  style={{ gridTemplateColumns: '96px repeat(5, minmax(225px, 1fr)) 260px' }}
-                >
-                  <div className="p-3 border-r border-[#222222] flex items-center">Week</div>
-                  {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
-                    <div key={day} className="p-3 border-r border-[#222222] flex items-center justify-between">
-                      {day}
-                      <span className="material-symbols-outlined text-[14px] opacity-50">calendar_today</span>
-                    </div>
-                  ))}
-                  <div className="p-3 flex items-center">Remarks</div>
-                </div>
+              <div className="w-full">
+              {(() => {
+                const colWeek = `${Math.round(96 * tableZoom)}px`;
+                const colRemarks = `${Math.round(260 * tableZoom)}px`;
+                const colDay = `minmax(${Math.round(225 * tableZoom)}px, 1fr)`;
+                const gridTemplateColumns = `${colWeek} repeat(5, ${colDay}) ${colRemarks}`;
+                const gridMinWidth = `${Math.round(1481 * tableZoom)}px`;
+                const gridWidth = `${Math.round(tableZoom * 100)}%`;
 
-                {/* Data rows */}
-                <div className="flex flex-col divide-y divide-[#222222] w-full">
-                  {filtered.length > 0 ? (
-                    filtered.map((trade) => (
-                      <WeekRow key={trade.id} trade={trade} onOpenRemarks={setRemarksModal} onDeleteWeek={deleteRow} search={search} />
-                    ))
-                  ) : (
-                    <div className="py-16 text-center text-on-surface-variant font-label-md text-label-md">
-                      {search ? `No rows matched "${search}"` : 'No entries yet — click + to add a week'}
+                return (
+                  <div 
+                    className="bg-[#111111] border border-[#222222] rounded-xl shadow-sm flex flex-col custom-scrollbar"
+                    style={{
+                      width: gridWidth,
+                      minWidth: gridMinWidth,
+                    }}
+                  >
+                    {/* Header row */}
+                    <div 
+                      className="grid border-b border-[#222222] bg-[#0a0a0a] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
+                      style={{ 
+                        gridTemplateColumns,
+                        fontSize: `${Math.max(10, Math.round(12 * tableZoom))}px`
+                      }}
+                    >
+                      <div className="p-3 border-r border-[#222222] flex items-center">Week</div>
+                      {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
+                        <div key={day} className="p-3 border-r border-[#222222] flex items-center justify-between">
+                          {day}
+                          <span className="material-symbols-outlined text-[14px] opacity-50">calendar_today</span>
+                        </div>
+                      ))}
+                      <div className="p-3 flex items-center">Remarks</div>
                     </div>
-                  )}
-                  {/* Scroll anchor for the Add button */}
-                  <div ref={gridBottomRef} />
-                </div>
-              </div>
-              </div>{/* end zoom wrapper */}
+
+                    {/* Data rows */}
+                    <div className="flex flex-col divide-y divide-[#222222] w-full">
+                      {filtered.length > 0 ? (
+                        <Virtuoso
+                          ref={virtuosoRef}
+                          customScrollParent={scrollParent}
+                          data={filtered}
+                          initialTopMostItemIndex={initialIndex}
+                          overscan={{ main: 600, reverse: 600 }}
+                          increaseViewportBy={{ top: 500, bottom: 500 }}
+                          itemContent={(index, trade) => (
+                            <WeekRow 
+                              key={trade.id} 
+                              trade={trade} 
+                              onOpenRemarks={setRemarksModal} 
+                              onDeleteWeek={deleteRow} 
+                              search={search}
+                              gridCols={gridTemplateColumns}
+                              tableZoom={tableZoom}
+                            />
+                          )}
+                        />
+                      ) : (
+                        <div className="py-16 text-center text-on-surface-variant font-label-md text-label-md">
+                          {search ? `No rows matched "${search}"` : 'No entries yet — click + to add a week'}
+                        </div>
+                      )}
+                      <div ref={gridBottomRef} />
+                    </div>
+                  </div>
+                );
+              })()}
+              </div>{/* end grid wrapper */}
 
             </div>
           </div>

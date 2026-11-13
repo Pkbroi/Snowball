@@ -1,79 +1,192 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
 import { resolveImg, resolveImgAsync, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
+import ReactQuill from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
 
-/* ─────────────────────────────────────────────
-   Attach resize handles to a wrapper element.
-───────────────────────────────────────────── */
-function attachResizeHandles(wrapper, img) {
-  const handles = [
-    { dir: 'n', css: 'top:-5px;left:50%;transform:translateX(-50%);width:44px;height:10px;cursor:n-resize;' },
-    { dir: 'e', css: 'top:50%;right:-5px;transform:translateY(-50%);width:10px;height:44px;cursor:e-resize;' },
-    { dir: 's', css: 'bottom:-5px;left:50%;transform:translateX(-50%);width:44px;height:10px;cursor:s-resize;' },
-    { dir: 'w', css: 'top:50%;left:-5px;transform:translateY(-50%);width:10px;height:44px;cursor:w-resize;' },
-  ];
-  handles.forEach(({ dir, css }) => {
-    const handle = document.createElement('span');
-    handle.dataset.resizeDir = dir;
-    handle.style.cssText =
-      `position:absolute;${css}background:#6b7280;border-radius:6px;` +
-      `opacity:0;transition:opacity 0.15s;z-index:20;`;
-    handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
+
+
+/* ─── Image Resize Handler ─────────────────────────────────────────────────
+   Attaches MS-Word–style resize handles to images inside the Quill editor.
+   Click an image → 8 handles appear; drag to resize. No external deps.
+─────────────────────────────────────────────────────────────────────────── */
+function ImageResizeHandler({ quillRef }) {
+  useEffect(() => {
+    let cleanup = () => {};
+
+    // Quill editor may not be mounted on first tick — retry a few times
+    let attempts = 0;
+    const tryAttach = () => {
+      attempts++;
+      const editorRoot = quillRef.current?.getEditor?.()?.root;
+      if (!editorRoot) {
+        if (attempts < 20) setTimeout(tryAttach, 100);
+        return;
+      }
+    let overlay = null;
+    let activeImg = null;
+    let startX = 0, startY = 0, startW = 0, startH = 0;
+    let currentHandle = null;
+
+    const HANDLE_SIZE = 10;
+
+    const removeOverlay = () => {
+      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      overlay = null;
+      activeImg = null;
+    };
+
+    const makeHandle = (cursor) => {
+      const h = document.createElement('div');
+      h.style.cssText = `
+        position:absolute; width:${HANDLE_SIZE}px; height:${HANDLE_SIZE}px;
+        background:#3b82f6; border:1.5px solid #fff; border-radius:2px;
+        cursor:${cursor}; box-shadow:0 1px 3px rgba(0,0,0,.5);
+        z-index:9999; transform:translate(-50%,-50%);
+      `;
+      return h;
+    };
+
+    const positionOverlay = (img) => {
+      const rect = img.getBoundingClientRect();
+      const editorRect = editorRoot.getBoundingClientRect();
+      const scrollTop = editorRoot.scrollTop;
+      const scrollLeft = editorRoot.scrollLeft;
+
+      overlay.style.left   = `${rect.left - editorRect.left + scrollLeft}px`;
+      overlay.style.top    = `${rect.top  - editorRect.top  + scrollTop}px`;
+      overlay.style.width  = `${rect.width}px`;
+      overlay.style.height = `${rect.height}px`;
+    };
+
+    const attachOverlay = (img) => {
+      removeOverlay();
+      activeImg = img;
+
+      overlay = document.createElement('div');
+      overlay.style.cssText = `
+        position:absolute; box-sizing:border-box;
+        border:2px solid #3b82f6; pointer-events:none;
+        z-index:9998;
+      `;
+
+      // 8 handles: corners + edge midpoints
+      const handles = [
+        { cursor:'nw-resize',  tx:0,    ty:0    },
+        { cursor:'n-resize',   tx:0.5,  ty:0    },
+        { cursor:'ne-resize',  tx:1,    ty:0    },
+        { cursor:'e-resize',   tx:1,    ty:0.5  },
+        { cursor:'se-resize',  tx:1,    ty:1    },
+        { cursor:'s-resize',   tx:0.5,  ty:1    },
+        { cursor:'sw-resize',  tx:0,    ty:1    },
+        { cursor:'w-resize',   tx:0,    ty:0.5  },
+      ];
+
+      handles.forEach(({ cursor, tx, ty }) => {
+        const h = makeHandle(cursor);
+        h.style.pointerEvents = 'all';
+        h.style.left = `${tx * 100}%`;
+        h.style.top  = `${ty * 100}%`;
+        h.dataset.tx = tx;
+        h.dataset.ty = ty;
+
+        h.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          currentHandle = { tx: parseFloat(h.dataset.tx), ty: parseFloat(h.dataset.ty) };
+          startX = e.clientX;
+          startY = e.clientY;
+          startW = activeImg.offsetWidth  || activeImg.naturalWidth  || 200;
+          startH = activeImg.offsetHeight || activeImg.naturalHeight || 150;
+        });
+
+        overlay.appendChild(h);
+      });
+
+      // Size label
+      const label = document.createElement('div');
+      label.className = '_qir_label';
+      label.style.cssText = `
+        position:absolute; bottom:-22px; left:0; background:#3b82f6; color:#fff;
+        font-size:10px; padding:1px 5px; border-radius:3px; white-space:nowrap;
+        pointer-events:none; z-index:9999;
+      `;
+      overlay.appendChild(label);
+      overlay._label = label;
+
+      const editorRoot2 = editorRoot;
+      editorRoot2.style.position = 'relative';
+      editorRoot2.appendChild(overlay);
+
+      positionOverlay(img);
+      overlay._label.textContent = `${Math.round(img.offsetWidth)} × ${Math.round(img.offsetHeight)}`;
+    };
+
+    const onMouseMove = (e) => {
+      if (!currentHandle || !activeImg) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+
+      let newW = startW;
+      let newH = startH;
+
+      const { tx, ty } = currentHandle;
+
+      if (tx === 1)   newW = Math.max(20, startW + dx);
+      if (tx === 0)   newW = Math.max(20, startW - dx);
+      if (ty === 1)   newH = Math.max(20, startH + dy);
+      if (ty === 0)   newH = Math.max(20, startH - dy);
+      // corners: both axes
+      if (tx === 0.5) newW = startW;
+      if (ty === 0.5) newH = startH;
+
+      activeImg.style.width  = `${newW}px`;
+      activeImg.style.height = `${newH}px`;
+
+      positionOverlay(activeImg);
+      if (overlay._label) {
+        overlay._label.textContent = `${Math.round(newW)} × ${Math.round(newH)}`;
+      }
+    };
+
+    const onMouseUp = () => {
+      currentHandle = null;
+    };
+
+    const onImgClick = (e) => {
+      const img = e.target;
+      if (img.tagName !== 'IMG') return;
       e.stopPropagation();
-      const startX = e.clientX, startY = e.clientY;
-      const startW = img.offsetWidth, startH = img.offsetHeight;
-      const onMove = (ev) => {
-        const dx = ev.clientX - startX, dy = ev.clientY - startY;
-        if (dir === 'e') img.style.width  = `${Math.max(60, startW + dx)}px`;
-        if (dir === 'w') img.style.width  = `${Math.max(60, startW - dx)}px`;
-        if (dir === 's') img.style.height = `${Math.max(40, startH + dy)}px`;
-        if (dir === 'n') img.style.height = `${Math.max(40, startH - dy)}px`;
-      };
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-    wrapper.appendChild(handle);
-  });
-  const show = () => wrapper.querySelectorAll('[data-resize-dir]').forEach((h) => (h.style.opacity = '1'));
-  const hide = () => wrapper.querySelectorAll('[data-resize-dir]').forEach((h) => (h.style.opacity = '0'));
-  wrapper.addEventListener('mouseenter', show);
-  wrapper.addEventListener('mouseleave', hide);
-}
+      attachOverlay(img);
+    };
 
-/* ─────────────────────────────────────────────
-   Insert resizable image at caret in notes.
-───────────────────────────────────────────── */
-function insertResizableImage(src, editor) {
-  editor.focus();
-  const wrapper = document.createElement('span');
-  wrapper.contentEditable = 'false';
-  wrapper.style.cssText =
-    'display:inline-block;position:relative;line-height:0;margin:6px 2px;vertical-align:middle;user-select:none;';
-  const img = document.createElement('img');
-  img.src = src;
-  img.style.cssText = 'display:block;width:320px;height:auto;border-radius:4px;';
-  img.draggable = false;
-  wrapper.appendChild(img);
-  attachResizeHandles(wrapper, img);
-  const sel = window.getSelection();
-  if (sel && sel.rangeCount > 0) {
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    range.insertNode(wrapper);
-    const after = document.createRange();
-    after.setStartAfter(wrapper);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
-  } else {
-    editor.appendChild(wrapper);
-  }
+    const onDocClick = (e) => {
+      if (overlay && !overlay.contains(e.target) && e.target !== activeImg) {
+        removeOverlay();
+      }
+    };
+
+    editorRoot.addEventListener('click', onImgClick);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('click', onDocClick);
+
+    cleanup = () => {
+      editorRoot.removeEventListener('click', onImgClick);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('click', onDocClick);
+      removeOverlay();
+    };
+    }; // end tryAttach
+
+    tryAttach();
+    return () => cleanup();
+  }, [quillRef]);
+
+  return null;
 }
 
 /* ─── Page ─── */
@@ -82,6 +195,9 @@ export default function TradeDetail() {
   const { id }    = useParams();
   const { state } = useLocation();
   const search = state?.search || '';
+
+  // Apply smooth scrolling to the window for this page
+  useLenis();
 
   // Resolve trade data — prefer router state, fall back to lookup
   const trade = state ?? (() => {
@@ -92,10 +208,19 @@ export default function TradeDetail() {
   })();
 
   const handleBack = () => {
-    navigate(search ? `/?q=${encodeURIComponent(search)}` : '/');
+    sessionStorage.setItem('sb_last_week_id', weekId);
+    sessionStorage.setItem('sb_last_day', dayName);
+    navigate(search ? `/?q=${encodeURIComponent(search)}` : '/', {
+      state: {
+        returnWeekId: weekId,
+        returnDay: dayName,
+        search,
+      }
+    });
   };
 
   const fileInputRef = useRef(null);
+  const quillRef     = useRef(null);
   const editorRef    = useRef(null);
   const savedRange   = useRef(null);
   const hLineRef     = useRef(null);
@@ -104,7 +229,6 @@ export default function TradeDetail() {
   const vLineInlineRef = useRef(null);
 
   const [expanded, setExpanded] = useState(false);
-  const [ctxMenu,  setCtxMenu]  = useState(null);
   const [saveStatus, setSaveStatus] = useState('');
   const timeoutRef = useRef(null);
 
@@ -138,6 +262,18 @@ export default function TradeDetail() {
       setPickerValue(savedTradeDate);
     }
   }, [trade, weekId, dayName]);
+
+  useEffect(() => {
+    const attachTestId = () => {
+      const root = quillRef.current?.getEditor?.()?.root;
+      if (root) {
+        root.setAttribute('data-testid', 'notes-editor');
+      }
+    };
+    attachTestId();
+    const timer = setTimeout(attachTestId, 100);
+    return () => clearTimeout(timer);
+  }, []);
 
   /* ── Save chart image to localStorage + state ── */
   const persistChart = useCallback(async (fileOrDataUrl) => {
@@ -188,19 +324,17 @@ export default function TradeDetail() {
   };
 
   /* ── Init Notes ── */
+  const [notesContent, setNotesContent] = useState('');
   useEffect(() => {
-    const el = editorRef.current;
-    if (el && trade) {
-      el.innerHTML = getNotes(weekId, dayName) ?? trade.day?.notes ?? '';
+    if (trade) {
+      setNotesContent(getNotes(weekId, dayName) ?? trade.day?.notes ?? '');
     }
   }, [weekId, dayName, trade]);
 
-  const persistNotes = useCallback(() => {
-    const el = editorRef.current;
-    if (el) {
-      setNotes(weekId, dayName, el.innerHTML);
-      triggerSaveIndicator();
-    }
+  const persistNotes = useCallback((val) => {
+    setNotesContent(val);
+    setNotes(weekId, dayName, val);
+    triggerSaveIndicator();
   }, [weekId, dayName, triggerSaveIndicator]);
 
   /* ── Trade Date ── */
@@ -235,56 +369,7 @@ export default function TradeDetail() {
     triggerSaveIndicator();
   };
 
-  /* ── Font size context menu ── */
-  const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28];
-  const handleNotesContextMenu = useCallback((e) => {
-    e.preventDefault();
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) savedRange.current = sel.getRangeAt(0).cloneRange();
-    setCtxMenu({ x: e.clientX, y: e.clientY });
-  }, []);
-  const dismissCtxMenu = useCallback(() => setCtxMenu(null), []);
-  const applyFontSize = useCallback((size) => {
-    setCtxMenu(null);
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.focus();
-    if (savedRange.current) {
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(savedRange.current);
-    }
-    const span = document.createElement('span');
-    span.style.fontSize   = `${size}px`;
-    span.style.lineHeight = '1.7';
-    span.appendChild(document.createTextNode('\u200B'));
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      range.collapse(true);
-      range.insertNode(span);
-      const newRange = document.createRange();
-      newRange.setStart(span.firstChild, 1);
-      newRange.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(newRange);
-    }
-  }, []);
 
-  /* ── Notes paste (images) ── */
-  const handleNotesPaste = useCallback((e) => {
-    const items = Array.from(e.clipboardData?.items ?? []);
-    const imgItem = items.find((i) => i.type.startsWith('image/'));
-    if (!imgItem) return;
-    e.preventDefault();
-    const blob = imgItem.getAsFile();
-    if (blob) {
-      fileToDataUrl(blob).then(dataUrl => {
-        insertResizableImage(dataUrl, editorRef.current);
-        persistNotes();
-      });
-    }
-  }, [persistNotes]);
 
   if (!trade) {
     return (
@@ -305,7 +390,6 @@ export default function TradeDetail() {
   return (
     <div
       className="antialiased min-h-screen flex flex-col items-center px-margin-desktop font-sans pt-sm pb-xl"
-      onClick={dismissCtxMenu}
     >
       {/* Hidden file input for chart upload */}
       <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
@@ -415,7 +499,7 @@ export default function TradeDetail() {
           {chartImg ? (
             /* Image present: show with delete button, double-click expands */
             <div
-              className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-video bg-surface-container-lowest relative cursor-crosshair group"
+              className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-[1916/1000] bg-surface-container-lowest relative cursor-crosshair group"
               data-testid="chart-image-container"
               onDoubleClick={handleChartDoubleClick}
               title="Double-click to expand"
@@ -433,7 +517,7 @@ export default function TradeDetail() {
               <div ref={hLineInlineRef} className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-white/70 z-20 mix-blend-difference" style={{ top: '-10px' }} />
               <div ref={vLineInlineRef} className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-white/70 z-20 mix-blend-difference" style={{ left: '-10px' }} />
 
-              <img src={chartImg} alt={`${day.day} chart`} className="w-full h-full object-cover pointer-events-none" />
+              <img src={chartImg} alt={`${day.day} chart`} className="w-full h-full object-contain pointer-events-none" />
               <button
                 onDoubleClick={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); deleteChart(); }}
@@ -453,7 +537,7 @@ export default function TradeDetail() {
               onPaste={handleChartPaste}
               tabIndex={0}
               data-testid="chart-dropzone"
-              className={`w-full rounded-lg border-2 aspect-video transition-colors flex flex-col items-center justify-center cursor-pointer group focus:outline-none focus:border-primary/50 focus:bg-surface-container-high ${
+              className={`w-full rounded-lg border-2 aspect-[1916/1000] transition-colors flex flex-col items-center justify-center cursor-pointer group focus:outline-none focus:border-primary/50 focus:bg-surface-container-high ${
                 chartDragging
                   ? 'border-primary bg-surface-container-high border-solid'
                   : 'border-dashed border-outline-variant bg-surface-container-low hover:bg-surface-container-highest'
@@ -472,52 +556,44 @@ export default function TradeDetail() {
           )}
         </section>
 
-        {/* ── Notes / freewrite area ── */}
-        <section className="w-full flex-1 flex flex-col">
-          {/* Formatting Toolbar */}
-          <div className="flex gap-2 mb-2 p-2 bg-surface-container-low border border-outline-variant rounded-md">
-            <button onClick={() => document.execCommand('bold', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Bold"><span className="material-symbols-outlined text-[20px]">format_bold</span></button>
-            <button onClick={() => document.execCommand('italic', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Italic"><span className="material-symbols-outlined text-[20px]">format_italic</span></button>
-            <button onClick={() => document.execCommand('underline', false, null)} className="p-1 rounded hover:bg-surface-variant text-on-surface" title="Underline"><span className="material-symbols-outlined text-[20px]">format_underlined</span></button>
-
-          </div>
-          <div
-            ref={editorRef}
-            contentEditable
-            suppressContentEditableWarning
-            data-testid="notes-editor"
-            onContextMenu={handleNotesContextMenu}
-            onPaste={handleNotesPaste}
-            onInput={persistNotes}
-            placeholder="Start writing… paste text or images here"
-            spellCheck={false}
-            className="flex-1 min-h-[220px] w-full bg-transparent text-on-surface focus:outline-none cursor-text p-2"
-            style={{ fontSize: '16px', lineHeight: 1.7, wordBreak: 'break-word' }}
+        {/* ── Notes / freewrite area (seamless blank space, no rectangle) ── */}
+        <section 
+          className="w-full flex-1 flex flex-col mb-8"
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+              e.preventDefault();
+            }
+          }}
+          onDrop={async (e) => {
+            const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
+            if (file) {
+              e.preventDefault();
+              e.stopPropagation();
+              const dataUrl = await fileToDataUrl(file);
+              const quill = quillRef.current?.getEditor();
+              if (quill) {
+                const range = quill.getSelection(true) || { index: quill.getLength() };
+                quill.insertEmbed(range.index, 'image', dataUrl);
+                quill.setSelection(range.index + 1);
+              } else {
+                persistNotes((notesContent || '') + `<p><img src="${dataUrl}" /></p>`);
+              }
+            }
+          }}
+        >
+          <ReactQuill 
+            ref={quillRef}
+            theme="snow"
+            value={notesContent}
+            onChange={persistNotes}
+            placeholder="Type notes here… Use Ctrl+B for bold. Drag & drop or paste images anytime."
+            className="flex-1 text-on-surface"
+            modules={{ toolbar: false }}
           />
+          <ImageResizeHandler quillRef={quillRef} />
         </section>
       </main>
 
-      {/* ── Font-size context menu ── */}
-      {ctxMenu && (
-        <div
-          className="fixed z-50 layer-overlay rounded-lg py-1 shadow-xl min-w-[160px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <p className="px-3 py-1 text-[10px] uppercase tracking-widest text-on-surface-variant font-label-sm border-b border-outline-variant mb-1">
-            Font size
-          </p>
-          {FONT_SIZES.map((size) => (
-            <button
-              key={size}
-              onClick={() => applyFontSize(size)}
-              className="w-full text-left px-4 py-1.5 text-[13px] font-label-md hover:bg-surface-bright transition-colors text-on-surface"
-            >
-              {size}px
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

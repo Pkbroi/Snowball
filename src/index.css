@@ -56,7 +56,14 @@ input, textarea, [contenteditable], [contenteditable] *,
 .layer-overlay  { background-color: #1A1A1A; box-shadow: 0 0 15px rgba(255,255,255,0.04); border: 1px solid #333333; }
 
 /* ─── Content-editable placeholder ─── */
-[contenteditable]:empty:before { content: attr(placeholder); color: #8e9192; cursor: text; }
+[contenteditable]:empty:before { 
+  content: attr(placeholder); 
+  color: #8e9192; 
+  cursor: text; 
+  pointer-events: none;
+  display: inline-block;
+}
+[contenteditable]:empty:focus:before { content: ''; }
 
 /* ─── Animate expand (Page 2) ─── */
 @keyframes expandIn {
@@ -71,3 +78,59 @@ input, textarea, [contenteditable], [contenteditable] *,
 
 /* ─── Disable drag on images (prevents Windows ghost-drag artefacts) ─── */
 img { -webkit-user-drag: none; user-drag: none; }
+
+/* ─── React Quill Dark Theme Overrides (Borderless / Clean Canvas) ─── */
+.ql-toolbar.ql-snow {
+  border: none !important;
+  background-color: transparent;
+  display: none !important;
+}
+.ql-container.ql-snow {
+  border: none !important;
+  background-color: transparent;
+  font-family: inherit !important;
+  font-size: 16px !important;
+}
+.ql-snow .ql-stroke {
+  stroke: #e2e2e2 !important;
+}
+.ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill {
+  fill: #e2e2e2 !important;
+}
+.ql-snow .ql-picker {
+  color: #e2e2e2 !important;
+}
+.ql-editor {
+  line-height: 1.7;
+  padding: 12px 0 !important;
+  min-height: 300px;
+  outline: none !important;
+  border: none !important;
+}
+.ql-editor.ql-blank::before {
+  left: 0 !important;
+  right: 0 !important;
+  color: #71717a !important;
+  font-style: normal !important;
+}
+
+/* ─── Scroll performance: compositor hints ─── */
+[data-testid="main-scroll-container"] {
+  /* Prevent Windows scroll-chain stutter when reaching list edges */
+  overscroll-behavior: contain;
+  /* Pre-promote the scroll layer so the compositor can paint it independently */
+  will-change: scroll-position;
+}
+
+/* ─── Cell containment: isolate repaints to individual cells ─── */
+/* Tells the browser a cell's content can't affect layout outside it, so paint
+   invalidation is scoped to a single composited tile rather than the whole page. */
+[data-testid^="day-cell-"] {
+  contain: layout style paint;
+}
+
+/* ─── Week row layout containment ─── */
+[data-testid^="week-row-"] {
+  contain: layout style;
+}
+

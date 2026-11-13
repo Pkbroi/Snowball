@@ -30,3 +30,4 @@ release
 playwright-report/
 test-results/
 release/
+dist-app/
