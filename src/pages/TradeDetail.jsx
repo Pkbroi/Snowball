@@ -42,7 +42,7 @@ function ImageResizeHandler({ quillRef }) {
       const h = document.createElement('div');
       h.style.cssText = `
         position:absolute; width:${HANDLE_SIZE}px; height:${HANDLE_SIZE}px;
-        background:#3b82f6; border:1.5px solid #fff; border-radius:2px;
+        background:#ececec; border:1.5px solid #fff; border-radius:2px;
         cursor:${cursor}; box-shadow:0 1px 3px rgba(0,0,0,.5);
         z-index:9999; transform:translate(-50%,-50%);
       `;
@@ -68,7 +68,7 @@ function ImageResizeHandler({ quillRef }) {
       overlay = document.createElement('div');
       overlay.style.cssText = `
         position:absolute; box-sizing:border-box;
-        border:2px solid #3b82f6; pointer-events:none;
+        border:2px solid #ececec; pointer-events:none;
         z-index:9998;
       `;
 
@@ -109,7 +109,7 @@ function ImageResizeHandler({ quillRef }) {
       const label = document.createElement('div');
       label.className = '_qir_label';
       label.style.cssText = `
-        position:absolute; bottom:-22px; left:0; background:#3b82f6; color:#fff;
+        position:absolute; bottom:-22px; left:0; background:#ececec; color:#fff;
         font-size:10px; padding:1px 5px; border-radius:3px; white-space:nowrap;
         pointer-events:none; z-index:9999;
       `;
@@ -657,7 +657,7 @@ export default function TradeDetail() {
         onClick={handleBack} 
         data-testid="back-button" 
         aria-label="Back to Journal" 
-        className="fixed top-4 left-4 md:top-6 md:left-6 z-40 flex items-center gap-1.5 text-on-surface-variant/80 hover:text-primary transition-all bg-[#111111]/50 backdrop-blur-md border border-[#222222]/50 px-3 py-1.5 rounded-full shadow-sm hover:bg-[#111111]/80 hover:shadow-md duration-200"
+        className="fixed top-4 left-4 md:top-6 md:left-6 z-40 flex items-center gap-1.5 text-on-surface-variant/80 hover:text-primary transition-all bg-[#212121]/50 backdrop-blur-md border border-[#424242]/50 px-3 py-1.5 rounded-full shadow-sm hover:bg-[#212121]/80 hover:shadow-md duration-200"
       >
         <span className="material-symbols-outlined text-[16px]">arrow_back</span>
         <span className="text-[11px] font-medium tracking-wide uppercase">Back</span>

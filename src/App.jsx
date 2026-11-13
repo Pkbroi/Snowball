@@ -36,7 +36,7 @@ export default function App() {
                   className="h-full rounded-full transition-all duration-200"
                   style={{
                     width: `${pct}%`,
-                    background: 'linear-gradient(90deg, #1a437e, #4a8fff)',
+                    background: 'linear-gradient(90deg, #ececec, #9b9b9b)',
                   }}
                 />
               </div>

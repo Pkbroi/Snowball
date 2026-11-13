@@ -7,7 +7,7 @@
 
 body {
   background-color: #000000;
-  color: #e2e2e2;
+  color: #ececec;
   font-family: 'Inter', sans-serif;
 
   /* Windows-specific font rendering (antialiased has no effect on Windows/Chromium) */
@@ -15,6 +15,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  letter-spacing: -0.01em; /* ChatGPT-style tight tracking, Söhne-like */
 
   /* Prevent accidental text-selection on UI chrome when clicking fast on Windows */
   user-select: none;
@@ -30,30 +31,30 @@ input, textarea, [contenteditable], [contenteditable] *,
 
 /* ─── Custom Scrollbar (doubled thickness for easy grab) ─── */
 .custom-scrollbar::-webkit-scrollbar { width: 16px; height: 16px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: #111111; border-radius: 8px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: #000000; border-radius: 8px; }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #353535;
+  background: #424242;
   border-radius: 8px;
   /* Inset border creates visual separation from the track on Windows */
-  border: 3px solid #111111;
+  border: 3px solid #000000;
 }
-.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #555858; }
-.custom-scrollbar::-webkit-scrollbar-corner { background: #111111; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #616161; }
+.custom-scrollbar::-webkit-scrollbar-corner { background: #000000; }
 
 /* Global scrollbar (non-custom-scrollbar elements) */
 ::-webkit-scrollbar { width: 14px; height: 14px; }
-::-webkit-scrollbar-track { background: #0e0e0e; border-radius: 7px; }
+::-webkit-scrollbar-track { background: #000000; border-radius: 7px; }
 ::-webkit-scrollbar-thumb {
-  background: #333333;
+  background: #424242;
   border-radius: 7px;
-  border: 3px solid #0e0e0e;
+  border: 3px solid #000000;
 }
-::-webkit-scrollbar-thumb:hover { background: #505353; }
-::-webkit-scrollbar-corner { background: #0e0e0e; }
+::-webkit-scrollbar-thumb:hover { background: #616161; }
+::-webkit-scrollbar-corner { background: #000000; }
 
 /* ─── Tonal layers (Page 2) ─── */
-.layer-surface  { background-color: #111111; border: 1px solid #222222; }
-.layer-overlay  { background-color: #1A1A1A; box-shadow: 0 0 15px rgba(255,255,255,0.04); border: 1px solid #333333; }
+.layer-surface  { background-color: #212121; border: 1px solid #424242; }
+.layer-overlay  { background-color: #2f2f2f; box-shadow: 0 0 15px rgba(255,255,255,0.04); border: 1px solid #424242; }
 
 /* ─── Content-editable placeholder ─── */
 [contenteditable]:empty:before { 
@@ -73,8 +74,8 @@ input, textarea, [contenteditable], [contenteditable] *,
 .animate-expand { animation: expandIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
 /* ─── Selection highlight ─── */
-::selection { background-color: #e2e2e2; color: #636565; }
-::-webkit-selection { background-color: #e2e2e2; color: #636565; }
+::selection { background-color: #ececec; color: #000000; }
+::-webkit-selection { background-color: #ececec; color: #000000; }
 
 /* ─── Disable drag on images (prevents Windows ghost-drag artefacts) ─── */
 img { -webkit-user-drag: none; user-drag: none; }
@@ -92,13 +93,13 @@ img { -webkit-user-drag: none; user-drag: none; }
   font-size: 16px !important;
 }
 .ql-snow .ql-stroke {
-  stroke: #e2e2e2 !important;
+  stroke: #ececec !important;
 }
 .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill {
-  fill: #e2e2e2 !important;
+  fill: #ececec !important;
 }
 .ql-snow .ql-picker {
-  color: #e2e2e2 !important;
+  color: #ececec !important;
 }
 .ql-editor {
   line-height: 1.7;
@@ -139,3 +140,29 @@ img { -webkit-user-drag: none; user-drag: none; }
   contain: layout style;
 }
 
+
+/* ─── Material Symbols, bundled locally: icons work offline ───
+   The .woff2 is decoded from material-symbols-outlined.woff2.b64 by
+   scripts/decode-font.cjs (prebuild/dev); the repo stores the base64
+   text because the GitHub push path only accepts UTF-8 files. ─── */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: block;
+  src: url('./assets/fonts/material-symbols-outlined.woff2') format('woff2');
+}
+
+/* ─── Material Symbols: never show ligature text (calendar_today, …) ─── */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+}

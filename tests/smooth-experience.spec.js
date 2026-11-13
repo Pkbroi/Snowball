@@ -88,7 +88,7 @@ test.describe('Smooth experience (v2)', () => {
     const searchInput = page.getByTestId('search-input');
     await searchInput.fill('ZEBRA42');
     const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();
-    await expect(firstDayCell).toHaveClass(/bg-blue-900\/60/);
+    await expect(firstDayCell).toHaveClass(/bg-white\/10/);
     await searchInput.fill('NonExistentQuery1234');
     await expect(page.locator('[data-testid^="day-cell-"]')).toHaveCount(0);
     await expect(page.getByText('No rows matched')).toBeVisible();

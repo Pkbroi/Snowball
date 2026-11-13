@@ -74,12 +74,12 @@ function RemarksModal({ trade, onClose }) {
           </div>
           <button
             onClick={onClose}
-            className="flex items-center justify-center w-8 h-8 rounded-full bg-[#111111] border border-[#222222] text-on-surface hover:bg-surface-bright transition-colors shrink-0"
+            className="flex items-center justify-center w-8 h-8 rounded-full bg-[#212121] border border-[#424242] text-on-surface hover:bg-surface-bright transition-colors shrink-0"
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
         </div>
-        <div className="border-t border-[#222222] mx-xl shrink-0" />
+        <div className="border-t border-[#424242] mx-xl shrink-0" />
 
         {/* Rich editor */}
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
@@ -111,8 +111,8 @@ function RemarksModal({ trade, onClose }) {
 const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
   if (!outcome) return null;
   return (
-    <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-[#222222]/50 z-10 ${
-      outcome === 'W' ? 'bg-[#111111]/80 text-tertiary' : 'bg-[#111111]/80 text-error'
+    <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-[#424242]/50 z-10 ${
+      outcome === 'W' ? 'bg-[#2f2f2f]/90 text-white' : 'bg-[#2f2f2f]/90 text-white'
     }`}>
       {outcome}
     </div>
@@ -202,7 +202,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-[#222222] overflow-hidden p-1 cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+        className={`relative border-r border-[#424242] overflow-hidden p-1 cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         title="Double-click to open detail"
@@ -222,7 +222,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-[#222222] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-blue-900/60' : ''}`}
+      className={`relative border-r border-[#424242] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -517,7 +517,7 @@ function SettingsModal({ onClose }) {
                     className="h-full rounded-full transition-all duration-300 ease-out"
                     style={{
                       width: `${pct}%`,
-                      background: 'linear-gradient(90deg, var(--md-sys-color-primary, #4a8fff), var(--md-sys-color-tertiary, #1a437e))',
+                      background: 'linear-gradient(90deg, var(--md-sys-color-primary, #ececec), var(--md-sys-color-tertiary, #9b9b9b))',
                     }}
                   />
                 </div>
@@ -568,7 +568,7 @@ function SettingsModal({ onClose }) {
               <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleImport} />
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full py-2 bg-red-900/20 hover:bg-red-900/40 border border-error/50 rounded-lg text-error font-label-md flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2 bg-white/5 hover:bg-white/10 border border-outline/50 rounded-lg text-error font-label-md flex items-center justify-center gap-2 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">upload</span>
                 Import JSON Backup
@@ -1041,7 +1041,7 @@ export default function WeeklyJournal() {
         <main className="flex-1 flex flex-col h-full bg-black relative overflow-hidden">
 
           {/* Top App Bar */}
-          <header className="bg-[#111111] border-b border-[#222222] flex items-center w-full px-md md:px-lg h-16 shrink-0 z-30 gap-4">
+          <header className="bg-[#212121] border-b border-[#424242] flex items-center w-full px-md md:px-lg h-16 shrink-0 z-30 gap-4">
             {/* Left: title + search */}
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <span className="font-headline-lg text-headline-lg font-bold text-primary shrink-0">Snowball</span>
@@ -1054,7 +1054,7 @@ export default function WeeklyJournal() {
                   data-testid="search-input"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full bg-[#0a0a0a] rounded-lg border border-[#222222] py-1.5 pl-9 pr-8 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
+                  className="w-full bg-[#2f2f2f] rounded-full border border-[#424242] py-1.5 pl-9 pr-8 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
                   placeholder="Search remarks, notes, dates…"
                 />
                 {search && (
@@ -1091,7 +1091,7 @@ export default function WeeklyJournal() {
             {/* Right: zoom + add-row + settings */}
             <div className="flex items-center gap-2 text-on-surface-variant shrink-0">
               {/* Zoom controls */}
-              <div className="flex items-center gap-1 bg-[#111111] border border-[#222222] rounded-lg px-1 py-0.5">
+              <div className="flex items-center gap-1 bg-[#2f2f2f] border border-[#424242] rounded-full px-1 py-0.5">
                 <button
                   onClick={zoomOut}
                   data-testid="zoom-out-btn"
@@ -1125,7 +1125,7 @@ export default function WeeklyJournal() {
                 data-testid="add-week-btn"
                 aria-label="Add new week"
                 className="flex items-center justify-center w-9 h-9 rounded-full border border-outline-variant transition-colors hover:opacity-90 active:scale-95"
-                style={{ backgroundColor: 'rgb(26,67,126)', color: '#fff', fontSize: '22px', fontWeight: 900, lineHeight: 1 }}
+                style={{ backgroundColor: '#ffffff', color: '#000000', fontSize: '22px', fontWeight: 900, lineHeight: 1 }}
                 title="Add new week (Ctrl+N)"
               >
                 +
@@ -1158,7 +1158,7 @@ export default function WeeklyJournal() {
 
                 return (
                   <div
-                    className="bg-[#111111] border border-[#222222] rounded-xl shadow-sm flex flex-col custom-scrollbar"
+                    className="bg-[#212121] border border-[#424242] rounded-xl shadow-sm flex flex-col custom-scrollbar"
                     style={{
                       width: '100%',
                       minWidth: '1481px',
@@ -1167,14 +1167,14 @@ export default function WeeklyJournal() {
                   >
                     {/* Header row */}
                     <div
-                      className="grid border-b border-[#222222] bg-[#0a0a0a] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
+                      className="grid border-b border-[#424242] bg-[#2f2f2f] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
                       style={{
                         gridTemplateColumns,
                       }}
                     >
-                      <div className="p-3 border-r border-[#222222] flex items-center">Week</div>
+                      <div className="p-3 border-r border-[#424242] flex items-center">Week</div>
                       {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
-                        <div key={day} className="p-3 border-r border-[#222222] flex items-center justify-between">
+                        <div key={day} className="p-3 border-r border-[#424242] flex items-center justify-between">
                           {day}
                           <span className="material-symbols-outlined text-[14px] opacity-50">calendar_today</span>
                         </div>
@@ -1183,7 +1183,7 @@ export default function WeeklyJournal() {
                     </div>
 
                     {/* Data rows */}
-                    <div className="flex flex-col divide-y divide-[#222222] w-full">
+                    <div className="flex flex-col divide-y divide-[#424242] w-full">
                       {filtered.length > 0 ? (
                         <Virtuoso
                           ref={virtuosoRef}

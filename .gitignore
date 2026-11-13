@@ -31,3 +31,6 @@ playwright-report/
 test-results/
 release/
 dist-app/
+
+# Generated at build/dev time from the bundled base64 source
+src/assets/fonts/*.woff2
