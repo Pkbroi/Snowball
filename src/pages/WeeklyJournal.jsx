@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, memo, useMemo } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, memo, useMemo } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Virtuoso } from 'react-virtuoso';
 import ReactQuill from 'react-quill-new';
@@ -112,7 +112,7 @@ function RemarksModal({ trade, onClose }) {
 const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
   if (!outcome) return null;
   return (
-    <div className={`absolute top-1 right-1 backdrop-blur-sm px-1 rounded text-[9px] font-label-md border border-[#424242]/50 z-10 ${
+    <div className={`absolute top-[calc(4px*var(--tz))] right-[calc(4px*var(--tz))] backdrop-blur-sm px-[calc(4px*var(--tz))] rounded text-[calc(9px*var(--tz))] font-label-md border border-[#424242]/50 z-10 ${
       outcome === 'W' ? 'bg-[#2f2f2f]/90 text-white' : 'bg-[#2f2f2f]/90 text-white'
     }`}>
       {outcome}
@@ -203,12 +203,12 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-[#424242] overflow-hidden p-1 cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
+        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         title="Double-click to open detail"
       >
-        <div className="absolute inset-1 border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
+        <div className="absolute inset-[calc(4px*var(--tz))] border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
           <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
             fetchPriority="low" draggable={false} onLoad={() => setImgLoaded(true)}
             onError={() => setImgLoaded(true)}
@@ -223,7 +223,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-[#424242] overflow-hidden p-1 outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
+      className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -233,16 +233,16 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
       onClick={() => cellRef.current?.focus()}
       title="Double-click to open · drag/drop or paste an image · click then Ctrl+V"
     >
-      <div className={`absolute inset-1 rounded border flex flex-col items-center justify-center gap-0.5 transition-colors ${
+      <div className={`absolute inset-[calc(4px*var(--tz))] rounded border flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] transition-colors ${
         dragging
           ? 'border-primary bg-surface-container-high border-solid'
           : 'border-outline-variant/50 border-dashed bg-surface-container-lowest'
       }`}>
         {dragging
-          ? <span className="material-symbols-outlined text-[20px] text-primary">file_upload</span>
+          ? <span className="material-symbols-outlined text-[calc(20px*var(--tz))] text-primary">file_upload</span>
           : <>
-              <span className="text-on-surface-variant/40 font-label-md text-[9px] uppercase tracking-wide text-center px-1">No Trade</span>
-              <span className="text-on-surface-variant/25 font-label-md text-[8px] text-center px-1">drop / paste</span>
+              <span className="text-on-surface-variant/40 font-label-md text-[calc(9px*var(--tz))] uppercase tracking-wide text-center px-[calc(4px*var(--tz))]">No Trade</span>
+              <span className="text-on-surface-variant/25 font-label-md text-[calc(8px*var(--tz))] text-center px-[calc(4px*var(--tz))]">drop / paste</span>
             </>
         }
       </div>
@@ -287,7 +287,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
     >
 
       {/* ── Week label — editable ── */}
-      <div className="p-3 border-r border-outline-variant flex flex-col justify-center gap-1 relative group/del">
+      <div className="p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del">
         {trade.isCustom && (
           <button 
             onClick={() => onDeleteWeek(trade.id)}
@@ -296,7 +296,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
             className="absolute top-1 right-1 opacity-0 group-hover/del:opacity-100 hover:bg-error/20 hover:text-error text-on-surface-variant p-0.5 rounded transition-all"
             title="Delete custom week"
           >
-            <span className="material-symbols-outlined text-[14px]">delete</span>
+            <span className="material-symbols-outlined text-[calc(14px*var(--tz))]">delete</span>
           </button>
         )}
         <input
@@ -318,7 +318,8 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
             }
           }}
           title="Click to edit"
-          className="font-label-md text-label-md text-on-surface bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-1 py-0.5 w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          className="font-label-md text-on-surface bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          style={{ fontSize: 'calc(14px * var(--tz))', lineHeight: 'calc(20px * var(--tz))' }}
         />
         <input
           ref={endRef}
@@ -344,7 +345,8 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
             }
           }}
           title="Click to edit"
-          className="font-label-md text-label-md text-on-surface-variant opacity-70 bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-1 py-0.5 w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          className="font-label-md text-on-surface-variant opacity-70 bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          style={{ fontSize: 'calc(14px * var(--tz))', lineHeight: 'calc(20px * var(--tz))' }}
         />
       </div>
 
@@ -364,18 +366,18 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
 
       {/* ── Remarks — click to expand ── */}
       <div 
-        className="p-3 flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors"
+        className="p-[calc(12px*var(--tz))] flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors"
         data-testid={`remarks-cell-${trade.id}`}
         onClick={() => onOpenRemarks(trade)}
         title="Click to add or edit remarks"
       >
-        <div className="w-full font-body-md text-[13px] leading-snug text-primary font-bold line-clamp-4">
+        <div className="w-full font-body-md text-[calc(13px*var(--tz))] leading-snug text-primary font-bold line-clamp-4">
           {getRemarksText(trade.id) || <span className="text-on-surface-variant/50 font-normal">Click to add remarks…</span>}
         </div>
         <button
-          className="absolute top-1.5 right-1.5 opacity-0 group-hover/rem:opacity-60 hover:!opacity-100 transition-opacity text-on-surface-variant p-0.5 rounded bg-surface-container/50"
+          className="absolute top-[calc(6px*var(--tz))] right-[calc(6px*var(--tz))] opacity-0 group-hover/rem:opacity-60 hover:!opacity-100 transition-opacity text-on-surface-variant p-[calc(2px*var(--tz))] rounded bg-surface-container/50"
         >
-          <span className="material-symbols-outlined text-[14px]">open_in_full</span>
+          <span className="material-symbols-outlined text-[calc(14px*var(--tz))]">open_in_full</span>
         </button>
       </div>
     </div>
@@ -821,6 +823,44 @@ export default function WeeklyJournal() {
 
   const gridBottomRef = useRef(null);
   const virtuosoRef = useRef(null);
+  // True only until the first mount commits: a zoom change remounts
+  // Virtuoso (key={tableZoom} below) and must NOT re-apply
+  // initialTopMostItemIndex, or the list would jump back to the top.
+  const isFirstVirtuosoMount = useRef(true);
+  useEffect(() => { isFirstVirtuosoMount.current = false; });
+
+  // Preserve the scroll position across the Virtuoso remount that a zoom
+  // change triggers (key={tableZoom}): unmounting the list briefly
+  // empties the container, so the browser clamps scrollTop to 0. The
+  // saved position (captured in zoomIn/zoomOut before the change) is
+  // scaled by the zoom ratio so the same rows stay in view.
+  // useLayoutEffect runs before paint, so there is no flash of the top
+  // of the list.
+  const prevZoomRef = useRef(tableZoom);
+  useLayoutEffect(() => {
+    if (prevZoomRef.current === tableZoom) return;
+    const ratio = tableZoom / prevZoomRef.current;
+    prevZoomRef.current = tableZoom;
+    const container = scrollContainerRef.current;
+    const savedTop = zoomScrollTopRef.current;
+    if (!container || savedTop <= 0) return;
+    const targetTop = savedTop * ratio;
+    // The fresh Virtuoso instance measures its rows over the next few
+    // frames; until its total height can hold the target, the browser
+    // clamps the assignment. Retry until it sticks (or 10 frames pass,
+    // or another zoom change supersedes this one).
+    let attempts = 0;
+    const restore = () => {
+      const el = scrollContainerRef.current;
+      if (!el || prevZoomRef.current !== tableZoom) return;
+      if (el.scrollTop !== targetTop) el.scrollTop = targetTop;
+      if (el.scrollTop !== targetTop && attempts++ < 10) {
+        requestAnimationFrame(restore);
+      }
+    };
+    restore();
+    requestAnimationFrame(restore);
+  }, [tableZoom]);
   const scrollContainerRef = useRef(null);
   const scrollContentRef = useRef(null);  // Lenis content node (inner wrapper)
   // rAF handle used to throttle sessionStorage writes in handleScroll
@@ -991,8 +1031,17 @@ export default function WeeklyJournal() {
     });
   }, []);
 
-  const zoomIn  = useCallback(() => setTableZoom(z => Math.min(3.0, parseFloat((z + 0.1).toFixed(1)))), []);
-  const zoomOut = useCallback(() => setTableZoom(z => Math.max(0.5, parseFloat((z - 0.1).toFixed(1)))), []);
+  // Scroll position captured BEFORE a zoom change: the zoom remounts
+  // Virtuoso (key={tableZoom}), the list briefly unmounts, and the
+  // browser clamps scrollTop to 0 — which also overwrites
+  // scrollPos.current via handleScroll. So the pre-zoom position must be
+  // saved here, at the moment the user asks to zoom.
+  const zoomScrollTopRef = useRef(0);
+  const captureZoomScroll = useCallback(() => {
+    zoomScrollTopRef.current = scrollContainerRef.current?.scrollTop ?? 0;
+  }, []);
+  const zoomIn  = useCallback(() => { captureZoomScroll(); setTableZoom(z => Math.min(3.0, parseFloat((z + 0.1).toFixed(1)))); }, [captureZoomScroll]);
+  const zoomOut = useCallback(() => { captureZoomScroll(); setTableZoom(z => Math.max(0.5, parseFloat((z - 0.1).toFixed(1)))); }, [captureZoomScroll]);
 
   /* ── Add new row ── */
   const addRow = useCallback(() => {
@@ -1297,10 +1346,10 @@ export default function WeeklyJournal() {
           </header>
 
           {/* Workspace — scrolls only on the inner grid area */}
-          <div 
+          <div
             ref={scrollContainerRefCallback}
             data-testid="main-scroll-container"
-            onScroll={handleScroll} 
+            onScroll={handleScroll}
             className="flex-1 overflow-auto custom-scrollbar w-full"
           >
             <div ref={scrollContentRef} className="w-full h-full">
@@ -1308,37 +1357,42 @@ export default function WeeklyJournal() {
               {/* Grid */}
               <div className="w-full">
               {(() => {
-                // Zoom is a single CSS `zoom` on the container, not a new
-                // gridTemplateColumns + fontSize for every row. The old
-                // approach re-laid-out and re-rendered every WeekRow on
-                // each zoom step; zoom scales the fixed 1× layout instead,
-                // so WeekRow props (and their memo) never change.
-                const gridTemplateColumns = '96px repeat(5, minmax(225px, 1fr)) 260px';
+                // Zoom is REAL layout scaling, not CSS `zoom`: the grid
+                // carries a --tz variable and every size is calc(Npx *
+                // var(--tz)). CSS `zoom` made Virtuoso measure rows in
+                // visual px (getBoundingClientRect) while scrolling in
+                // layout px — the mismatch accumulated down the list and
+                // rows vanished from 110% up (worse at 120%). With layout
+                // scaling, measured == scrolled at every zoom, and
+                // WeekRow props (and their memo) still never change.
+                const gridTemplateColumns = 'calc(96px * var(--tz)) repeat(5, minmax(calc(225px * var(--tz)), 1fr)) calc(260px * var(--tz))';
 
                 return (
                   <div
                     className="bg-[#212121] border border-[#424242] rounded-xl shadow-sm flex flex-col custom-scrollbar"
                     style={{
+                      '--tz': tableZoom,
                       width: '100%',
-                      minWidth: '1481px',
-                      zoom: tableZoom,
+                      minWidth: 'calc(1481px * var(--tz))',
                     }}
                   >
                     {/* Header row */}
                     <div
-                      className="grid border-b border-[#424242] bg-[#2f2f2f] font-label-md text-label-md text-on-surface-variant uppercase tracking-wider w-full"
+                      className="grid border-b border-[#424242] bg-[#2f2f2f] font-label-md text-on-surface-variant uppercase tracking-wider w-full"
                       style={{
                         gridTemplateColumns,
+                        fontSize: 'calc(14px * var(--tz))',
+                        lineHeight: 'calc(20px * var(--tz))',
                       }}
                     >
-                      <div className="p-3 border-r border-[#424242] flex items-center">Week</div>
+                      <div className="p-[calc(12px*var(--tz))] border-r border-[#424242] flex items-center">Week</div>
                       {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
-                        <div key={day} className="p-3 border-r border-[#424242] flex items-center justify-between">
+                        <div key={day} className="p-[calc(12px*var(--tz))] border-r border-[#424242] flex items-center justify-between">
                           {day}
-                          <span className="material-symbols-outlined text-[14px] opacity-50">calendar_today</span>
+                          <span className="material-symbols-outlined text-[calc(14px*var(--tz))] opacity-50">calendar_today</span>
                         </div>
                       ))}
-                      <div className="p-3 flex items-center">Remarks</div>
+                      <div className="p-[calc(12px*var(--tz))] flex items-center">Remarks</div>
                     </div>
 
                     {/* Data rows */}
@@ -1346,9 +1400,19 @@ export default function WeeklyJournal() {
                       {filtered.length > 0 ? (
                         <Virtuoso
                           ref={virtuosoRef}
+                          // Remount on zoom change: Virtuoso caches measured
+                          // row heights per index, and sizes measured at the
+                          // old zoom are wrong at the new one — the cached
+                          // total stays short, the window is computed from
+                          // it, and rows vanish while scrolling. A fresh
+                          // instance measures everything at the new zoom.
+                          // The scroll container itself is not remounted,
+                          // so scrollTop survives; only the first mount
+                          // takes initialTopMostItemIndex.
+                          key={tableZoom}
                           customScrollParent={scrollParent}
                           data={filtered}
-                          initialTopMostItemIndex={initialIndex}
+                          initialTopMostItemIndex={isFirstVirtuosoMount.current ? initialIndex : undefined}
                           // 600px overscan + 500px extra viewport rendered
                           // ~3x more rows (and decoded thumbnails) than the
                           // viewport needs — the main scroll-jank contributor
