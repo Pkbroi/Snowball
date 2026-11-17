@@ -56,11 +56,80 @@ const runBatched = async (items, task, batchSize = 8) => {
   }
 };
 
+/* ─── Datasets: one journal per (index, year) ───
+ * Every journal entry (images, notes, remarks, extra weeks, …) lives
+ * under a per-dataset prefix, so Nifty 50 / 2026 and Bank Nifty / 2026
+ * never see each other's data and can be backed up separately.
+ *   sb_ds_<dataset-id>__img_<weekId>_<day>   (dataset data)
+ *   sb_datasets                               (registry, global)
+ *   sb_current_dataset                        (selected id, global)
+ * The current database is indexed to Nifty 50 / 2026: on first run
+ * with datasets, any legacy flat keys (sb_img_*, sb_extra_weeks, …)
+ * are moved under that dataset (see initStorage migration below).
+ */
+export const DEFAULT_DATASET = { id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 };
+const slugifyIndex = (name) =>
+  String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'index';
+export const datasetIdFor = (index, year) => `${slugifyIndex(index)}_${year}`;
+export const datasetLabel = (ds) => `${ds.index} · ${ds.year}`;
+
+let currentDatasetId = DEFAULT_DATASET.id;
+export const getCurrentDatasetId = () => currentDatasetId;
+export const getDatasets = () => memCache.get('sb_datasets') ?? [];
+export const getCurrentDataset = () =>
+  getDatasets().find((d) => d.id === currentDatasetId) ?? DEFAULT_DATASET;
+/** Prefix every per-dataset key with the selected dataset. */
+const dsPrefix = (id = currentDatasetId) => `sb_ds_${id}__`;
+
+/**
+ * Create a dataset for an (index, year) combination. Returns the existing
+ * one when that combination already exists — a dataset is never duplicated.
+ * The new dataset starts empty; weeks are added with the + button as usual.
+ */
+export const createDataset = async (index, year) => {
+  const cleanIndex = String(index).trim();
+  const cleanYear = Number(year);
+  if (!cleanIndex) throw new Error('Index name is required.');
+  if (!Number.isInteger(cleanYear) || cleanYear < 2000 || cleanYear > 2100) {
+    throw new Error('Year must be between 2000 and 2100.');
+  }
+  const id = datasetIdFor(cleanIndex, cleanYear);
+  const datasets = getDatasets();
+  const existing = datasets.find((d) => d.id === id);
+  if (existing) return existing;
+  const ds = { id, index: cleanIndex, year: cleanYear };
+  const next = [...datasets, ds];
+  memCache.set('sb_datasets', next);
+  await set('sb_datasets', next);
+  return ds;
+};
+
+/**
+ * Switch the journal to another dataset: persists the choice, then reloads
+ * the memory cache from IndexedDB for that dataset only. The caller must
+ * re-read getExtraWeeks() / getDatasets() afterwards (React state).
+ */
+export const switchDataset = async (id) => {
+  if (!getDatasets().some((d) => d.id === id)) {
+    throw new Error(`Unknown dataset: ${id}`);
+  }
+  currentDatasetId = id;
+  await set('sb_current_dataset', id);
+  await initStorage();
+  return getCurrentDataset();
+};
+
 /* ─── Cell chart images (Two-Tier Engine: Full-Res + Ultra-Fast Thumbnail) ─── */
-const imgKey = (weekId, dayName) => `sb_img_${weekId}_${dayName}`;
-const thumbKey = (weekId, dayName) => `sb_thumb_${weekId}_${dayName}`;
-const medKey = (weekId, dayName) => `sb_med_${weekId}_${dayName}`;
-const metaKey = (weekId, dayName) => `sb_meta_${weekId}_${dayName}`;
+const imgKey = (weekId, dayName) => `${dsPrefix()}img_${weekId}_${dayName}`;
+const thumbKey = (weekId, dayName) => `${dsPrefix()}thumb_${weekId}_${dayName}`;
+const medKey = (weekId, dayName) => `${dsPrefix()}med_${weekId}_${dayName}`;
+const metaKey = (weekId, dayName) => `${dsPrefix()}meta_${weekId}_${dayName}`;
+const remKey = (weekId) => `${dsPrefix()}rem_${weekId}`;
+const wlblKey = (weekId) => `${dsPrefix()}wlbl_${weekId}`;
+const notesKey = (weekId, dayName) => `${dsPrefix()}notes_${weekId}_${dayName}`;
+const tagsKey = (weekId, dayName) => `${dsPrefix()}tags_${weekId}_${dayName}`;
+const dateKey = (weekId, dayName) => `${dsPrefix()}date_${weekId}_${dayName}`;
+const extraWeeksKey = () => `${dsPrefix()}extra_weeks`;
 export const MEDIUM_MAX_DIM = 1600;
 export const THUMB_MAX_DIM = 480;
 
@@ -253,11 +322,46 @@ export const createThumbnail = (source) => createDerivative(source, { maxDim: TH
 export const createMedium = (source) => createDerivative(source, { maxDim: MEDIUM_MAX_DIM, quality: 0.85 });
 
 export const initStorage = async (onProgress) => {
-  const allKeys = await keys();
-  memCache.clear();
+  // 0. Dataset registry (global keys, never namespaced). First run with
+  //    datasets: index the existing database to Nifty 50 / 2026 by moving
+  //    every legacy flat key (sb_img_*, sb_extra_weeks, …) under that
+  //    dataset's prefix. A fresh install just creates the default dataset.
+  const savedDatasets = await get('sb_datasets');
+  const savedCurrent = await get('sb_current_dataset');
+  if (!savedDatasets) {
+    const preKeys = await keys();
+    const legacyKeys = preKeys.filter(k =>
+      typeof k === 'string' && k.startsWith('sb_') && !k.startsWith('sb_ds_') &&
+      k !== 'sb_datasets' && k !== 'sb_current_dataset');
+    const datasets = [DEFAULT_DATASET];
+    if (legacyKeys.length > 0) {
+      const target = dsPrefix(DEFAULT_DATASET.id);
+      for (const k of legacyKeys) {
+        const v = await get(k);
+        await set(`${target}${k.slice(3)}`, v);
+        await del(k);
+      }
+    }
+    await set('sb_datasets', datasets);
+    await set('sb_current_dataset', DEFAULT_DATASET.id);
+  }
+  const datasets = (await get('sb_datasets')) ?? [DEFAULT_DATASET];
+  currentDatasetId = savedCurrent && datasets.some(d => d.id === savedCurrent)
+    ? savedCurrent
+    : datasets[0].id;
+  await set('sb_current_dataset', currentDatasetId);
 
-  // 1. Load metadata, notes, tags, remarks, and extra weeks
-  const metaKeys = allKeys.filter(k => typeof k === 'string' && !k.startsWith('sb_img_') && !k.startsWith('sb_thumb_') && !k.startsWith('sb_med_'));
+  const allKeys = await keys();
+  // Revoke the previous dataset's blob URLs before dropping the cache,
+  // otherwise every index/year switch leaks thumbnail URLs.
+  for (const url of memCache.values()) revokeBlobUrl(url);
+  memCache.clear();
+  memCache.set('sb_datasets', datasets);
+
+  // 1. Load metadata, notes, tags, remarks, and extra weeks — current
+  //    dataset only. Other datasets' keys stay in IndexedDB untouched.
+  const p = dsPrefix();
+  const metaKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(p) && !k.startsWith(`${p}img_`) && !k.startsWith(`${p}thumb_`) && !k.startsWith(`${p}med_`));
   // Batched reads: prevent IDB queue saturation with unlimited Promise.all
   await runBatched(metaKeys, async (key) => {
     const val = await get(key);
@@ -269,7 +373,7 @@ export const initStorage = async (onProgress) => {
   //    every chart up front is what blocked first paint and made scrolling
   //    janky. They are loaded lazily, on demand, by getStoredImgAsync()
   //    (only when a detail page / lightbox actually needs one).
-  const thumbKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('sb_thumb_'));
+  const thumbKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(`${p}thumb_`));
   await runBatched(thumbKeys, async (key) => {
     const val = await get(key);
     if (val) {
@@ -289,12 +393,12 @@ export const initStorage = async (onProgress) => {
   //    nothing is visually missing; the thumb just swaps in when ready.
   //    requestIdleCallback keeps this off the critical path; setTimeout is
   //    the fallback (Electron / older Chromium).
-  const imgKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('sb_img_'));
-  const imgKeysWithoutThumb = imgKeys.filter(key => !memCache.has(key.replace('sb_img_', 'sb_thumb_')));
+  const imgKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(`${p}img_`));
+  const imgKeysWithoutThumb = imgKeys.filter(key => !memCache.has(key.replace(`${p}img_`, `${p}thumb_`)));
   if (imgKeysWithoutThumb.length > 0) {
     const backfill = () => {
       runBatched(imgKeysWithoutThumb, async (key) => {
-        const tKey = key.replace('sb_img_', 'sb_thumb_');
+        const tKey = key.replace(`${p}img_`, `${p}thumb_`);
         const val = await get(key);
         if (!val) return;
         const url = val instanceof Blob ? URL.createObjectURL(val) : val;
@@ -315,7 +419,7 @@ export const initStorage = async (onProgress) => {
         }
         // Medium tier (1600px, detail page) for legacy images that lack one.
         try {
-          const mKey = key.replace('sb_img_', 'sb_med_');
+          const mKey = key.replace(`${p}img_`, `${p}med_`);
           if (!memCache.has(mKey)) {
             const existingMed = await get(mKey);
             if (!existingMed) {
@@ -580,14 +684,14 @@ export const fileToDataUrl = async (file) => {
 };
 
 /* ─── Remarks (stored as HTML string) ─── */
-export const getRemarks = (weekId) => memCache.get(`sb_rem_${weekId}`);
+export const getRemarks = (weekId) => memCache.get(remKey(weekId));
 export const setRemarks = (weekId, html) => {
   if (html != null) {
-    memCache.set(`sb_rem_${weekId}`, html);
-    set(`sb_rem_${weekId}`, html);
+    memCache.set(remKey(weekId), html);
+    set(remKey(weekId), html);
   } else {
-    memCache.delete(`sb_rem_${weekId}`);
-    del(`sb_rem_${weekId}`);
+    memCache.delete(remKey(weekId));
+    del(remKey(weekId));
   }
 };
 
@@ -600,33 +704,33 @@ export const getRemarksText = (weekId, fallback = '') => {
 
 /* ─── Week label overrides ─── */
 export const getWeekLabel = (weekId) => {
-  const obj = memCache.get(`sb_wlbl_${weekId}`);
+  const obj = memCache.get(wlblKey(weekId));
   return obj ?? null;
 };
 export const setWeekLabel = (weekId, obj) => {
-  memCache.set(`sb_wlbl_${weekId}`, obj);
-  set(`sb_wlbl_${weekId}`, obj);
+  memCache.set(wlblKey(weekId), obj);
+  set(wlblKey(weekId), obj);
 };
 
 /* ─── User-added extra weeks ─── */
-export const getExtraWeeks = () => memCache.get('sb_extra_weeks') ?? [];
+export const getExtraWeeks = () => memCache.get(extraWeeksKey()) ?? [];
 export const setExtraWeeks = (weeks) => {
-  memCache.set('sb_extra_weeks', weeks);
-  set('sb_extra_weeks', weeks);
+  memCache.set(extraWeeksKey(), weeks);
+  set(extraWeeksKey(), weeks);
 };
 
 export const deleteWeekData = (weekId) => {
   // Clear week label and remarks
-  memCache.delete(`sb_wlbl_${weekId}`);
-  del(`sb_wlbl_${weekId}`);
-  memCache.delete(`sb_rem_${weekId}`);
-  del(`sb_rem_${weekId}`);
+  memCache.delete(wlblKey(weekId));
+  del(wlblKey(weekId));
+  memCache.delete(remKey(weekId));
+  del(remKey(weekId));
 
   // Clear day notes, images, and tags
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   days.forEach(dayName => {
-    memCache.delete(`sb_notes_${weekId}_${dayName}`);
-    del(`sb_notes_${weekId}_${dayName}`);
+    memCache.delete(notesKey(weekId, dayName));
+    del(notesKey(weekId, dayName));
     memCache.delete(imgKey(weekId, dayName));
     del(imgKey(weekId, dayName));
     memCache.delete(thumbKey(weekId, dayName));
@@ -635,22 +739,22 @@ export const deleteWeekData = (weekId) => {
     del(medKey(weekId, dayName));
     memCache.delete(metaKey(weekId, dayName));
     del(metaKey(weekId, dayName));
-    memCache.delete(`sb_tags_${weekId}_${dayName}`);
-    del(`sb_tags_${weekId}_${dayName}`);
-    memCache.delete(`sb_date_${weekId}_${dayName}`);
-    del(`sb_date_${weekId}_${dayName}`);
+    memCache.delete(tagsKey(weekId, dayName));
+    del(tagsKey(weekId, dayName));
+    memCache.delete(dateKey(weekId, dayName));
+    del(dateKey(weekId, dayName));
   });
 };
 
 /* ─── Cell day notes (stored as HTML string) ─── */
-export const getNotes = (weekId, dayName) => memCache.get(`sb_notes_${weekId}_${dayName}`);
+export const getNotes = (weekId, dayName) => memCache.get(notesKey(weekId, dayName));
 export const setNotes = (weekId, dayName, html) => {
   if (html) {
-    memCache.set(`sb_notes_${weekId}_${dayName}`, html);
-    set(`sb_notes_${weekId}_${dayName}`, html);
+    memCache.set(notesKey(weekId, dayName), html);
+    set(notesKey(weekId, dayName), html);
   } else {
-    memCache.delete(`sb_notes_${weekId}_${dayName}`);
-    del(`sb_notes_${weekId}_${dayName}`);
+    memCache.delete(notesKey(weekId, dayName));
+    del(notesKey(weekId, dayName));
   }
 };
 
@@ -662,26 +766,26 @@ export const getNotesText = (weekId, dayName, fallback = '') => {
 };
 
 /* ─── Trade Tags (Array of strings) ─── */
-export const getTags = (weekId, dayName) => memCache.get(`sb_tags_${weekId}_${dayName}`) ?? [];
+export const getTags = (weekId, dayName) => memCache.get(tagsKey(weekId, dayName)) ?? [];
 export const setTags = (weekId, dayName, tags) => {
   if (tags && tags.length > 0) {
-    memCache.set(`sb_tags_${weekId}_${dayName}`, tags);
-    set(`sb_tags_${weekId}_${dayName}`, tags);
+    memCache.set(tagsKey(weekId, dayName), tags);
+    set(tagsKey(weekId, dayName), tags);
   } else {
-    memCache.delete(`sb_tags_${weekId}_${dayName}`);
-    del(`sb_tags_${weekId}_${dayName}`);
+    memCache.delete(tagsKey(weekId, dayName));
+    del(tagsKey(weekId, dayName));
   }
 };
 
 /* ─── Trade Dates (String: yyyy-mm-dd) ─── */
-export const getTradeDate = (weekId, dayName) => memCache.get(`sb_date_${weekId}_${dayName}`) ?? '';
+export const getTradeDate = (weekId, dayName) => memCache.get(dateKey(weekId, dayName)) ?? '';
 export const setTradeDate = (weekId, dayName, dateStr) => {
   if (dateStr) {
-    memCache.set(`sb_date_${weekId}_${dayName}`, dateStr);
-    set(`sb_date_${weekId}_${dayName}`, dateStr);
+    memCache.set(dateKey(weekId, dayName), dateStr);
+    set(dateKey(weekId, dayName), dateStr);
   } else {
-    memCache.delete(`sb_date_${weekId}_${dayName}`);
-    del(`sb_date_${weekId}_${dayName}`);
+    memCache.delete(dateKey(weekId, dayName));
+    del(dateKey(weekId, dayName));
   }
 };
 
@@ -708,11 +812,20 @@ const blobToDataURL = (blob) =>
 // payloads without freezing).
 
 export const exportDatabase = async (onProgress) => {
+  // ONE clean backup of the whole database: every dataset (all indexes and
+  // years), plus the registry and the current selection, so a single file
+  // restores everything. Entries are sorted by key, so the file is
+  // deterministic and grouped by dataset.
+  // Exclude thumbnails and mediums — they are derived from full images and
+  // will be regenerated automatically by initStorage after import.
   const allEntries = await entries();
-
-  // Exclude thumbnails — they are derived from full images and will be
-  // regenerated automatically by initStorage after import.
-  const exportable = allEntries.filter(([k]) => !String(k).startsWith('sb_thumb_') && !String(k).startsWith('sb_med_'));
+  const isDerived = (k) => k.includes('__thumb_') || k.includes('__med_');
+  const exportable = allEntries
+    .filter(([k]) =>
+      typeof k === 'string' &&
+      (k === 'sb_datasets' || k === 'sb_current_dataset' || k.startsWith('sb_ds_')) &&
+      !isDerived(k))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
   const blobEntries = exportable.filter(([, v]) => v instanceof Blob);
   const total = blobEntries.length;
@@ -721,9 +834,10 @@ export const exportDatabase = async (onProgress) => {
 
   // Collect results (order preserved by index to avoid race-condition push issues)
   const result = new Array(exportable.length);
+  const idxByKey = new Map(exportable.map(([k], i) => [k, i]));
 
   await runBatched(exportable, async ([k, v], _i) => {
-    const idx = exportable.indexOf(exportable.find(([ek]) => ek === k));
+    const idx = idxByKey.get(k);
     if (v instanceof Blob) {
       // Lossless read — no re-compression whatsoever
       result[idx] = [k, await blobToDataURL(v)];
@@ -750,17 +864,19 @@ export const exportDatabase = async (onProgress) => {
 
 
 export const exportCSVDatabase = async () => {
+  const p = dsPrefix();
   const allEntries = await entries();
   let csvContent = "data:text/csv;charset=utf-8,";
   csvContent += "Type,Key,Value\n";
-  
+
   for (const [key, value] of allEntries) {
-    if (key.startsWith('sb_img_')) continue; // Skip images for CSV
-    const type = key.startsWith('sb_notes_') ? 'Note' : 
-                 key.startsWith('sb_rem_') ? 'Remark' : 
-                 key.startsWith('sb_date_') ? 'TradeDate' : 
-                 key === 'sb_extra_weeks' ? 'ExtraWeeks' : 
-                 key.startsWith('sb_wlbl_') ? 'WeekLabel' : 'Other';
+    if (typeof key !== 'string' || !key.startsWith(p)) continue; // current dataset only
+    if (key.startsWith(`${p}img_`)) continue; // Skip images for CSV
+    const type = key.startsWith(`${p}notes_`) ? 'Note' :
+                 key.startsWith(`${p}rem_`) ? 'Remark' :
+                 key.startsWith(`${p}date_`) ? 'TradeDate' :
+                 key === `${p}extra_weeks` ? 'ExtraWeeks' :
+                 key.startsWith(`${p}wlbl_`) ? 'WeekLabel' : 'Other';
                  
     let strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
     // Escape quotes
@@ -788,14 +904,78 @@ export const importDatabase = async (jsonString, onProgress) => {
     throw new Error('Invalid backup: file contains no Snowball data (sb_ keys).');
   }
 
-  await clear();
+  // Three backup shapes, all restored losslessly (images are stored as
+  // data-URLs and converted back to Blobs byte-for-byte — never re-encoded):
+  //  1. Whole-database backup (current format): carries sb_datasets +
+  //     sb_current_dataset plus every dataset's keys. Restores everything.
+  //  2. Single-dataset backup (v4 marker ['sb_dataset', {id,index,year}]):
+  //     restores into that dataset only, other datasets are untouched.
+  //  3. Legacy flat backup (pre-datasets): keys without a dataset prefix
+  //     are migrated into Nifty 50 / 2026, replacing the whole database
+  //     exactly as the old whole-database backups did.
+  const marker = data.find(([k]) => k === 'sb_dataset');
+  const hasRegistry = data.some(([k]) => k === 'sb_datasets');
+
+  let normalised = [];
+  let wipeAll = false;
+  let wipePrefix = null;
+
+  if (hasRegistry) {
+    wipeAll = true;
+    for (const [k, v] of data) {
+      if (k === 'sb_dataset' || typeof k !== 'string' || !k.startsWith('sb_')) continue;
+      if (k === 'sb_datasets' || k === 'sb_current_dataset' || k.startsWith('sb_ds_')) {
+        normalised.push([k, v]);
+      } else {
+        normalised.push([`${dsPrefix(DEFAULT_DATASET.id)}${k.slice(3)}`, v]);
+      }
+    }
+  } else {
+    const target = marker?.[1]?.id
+      ? { id: marker[1].id, index: marker[1].index, year: marker[1].year }
+      : getCurrentDataset();
+    const targetPrefix = dsPrefix(target.id);
+    wipePrefix = targetPrefix;
+    for (const [k, v] of data) {
+      if (k === 'sb_dataset' || typeof k !== 'string' || !k.startsWith('sb_')) continue;
+      if (k.startsWith('sb_ds_')) {
+        const entryDs = k.slice(6).split('__')[0];
+        if (entryDs !== target.id) {
+          throw new Error('Invalid backup: it mixes data from multiple index/year datasets.');
+        }
+        normalised.push([k, v]);
+      } else {
+        normalised.push([`${targetPrefix}${k.slice(3)}`, v]); // legacy flat key
+      }
+    }
+    // Register the target dataset if it is new, and select it — after import
+    // the app reloads into the restored dataset.
+    const datasets = getDatasets();
+    if (!datasets.some((d) => d.id === target.id)) {
+      normalised.push(['sb_datasets', [...datasets, target]]);
+    }
+    normalised.push(['sb_current_dataset', target.id]);
+    currentDatasetId = target.id;
+  }
+
+  // Wipe what the backup replaces: everything for a whole-database backup,
+  // only the target dataset for a single-dataset / legacy backup.
+  if (wipeAll) {
+    await clear();
+  } else if (wipePrefix) {
+    const existingKeys = await keys();
+    await runBatched(
+      existingKeys.filter(k => typeof k === 'string' && k.startsWith(wipePrefix)),
+      (k) => del(k), 16,
+    );
+  }
 
   // Skip thumbnails from the backup — initStorage will regenerate them
   // from the full-resolution images after import.
-  const imageEntries = data.filter(([k, v]) =>
-    typeof v === 'string' && v.startsWith('data:image') && !String(k).startsWith('sb_thumb_')
+  const imageEntries = normalised.filter(([k, v]) =>
+    typeof v === 'string' && v.startsWith('data:image') && !String(k).includes('__thumb_')
   );
-  const otherEntries = data.filter(([, v]) =>
+  const otherEntries = normalised.filter(([, v]) =>
     !(typeof v === 'string' && v.startsWith('data:image'))
   );
 
@@ -820,7 +1000,13 @@ export const importDatabase = async (jsonString, onProgress) => {
 };
 
 export const formatDatabase = async () => {
-  await clear();
+  // Wipe ONLY the current (index, year) dataset — other datasets are kept.
+  const p = dsPrefix();
+  const allKeys = await keys();
+  await runBatched(
+    allKeys.filter(k => typeof k === 'string' && k.startsWith(p)),
+    (k) => del(k), 16,
+  );
   memCache.clear();
   await initStorage();
 };

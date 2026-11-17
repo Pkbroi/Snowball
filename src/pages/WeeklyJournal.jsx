@@ -10,7 +10,8 @@ import {
   getRemarks, setRemarks, getRemarksText,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
-  exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate
+  exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate,
+  getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel
 } from '../data/storage.js';
 
 
@@ -403,6 +404,8 @@ function SettingsModal({ onClose }) {
     return () => document.removeEventListener('keydown', handleEsc);
   }, [onClose, isBusy]);
 
+  const currentDs = getCurrentDataset();
+
   const handleExport = async () => {
     try {
       setOp({ status: 'exporting', step: 'Reading database…', done: 0, total: 0 });
@@ -468,10 +471,10 @@ function SettingsModal({ onClose }) {
 
   const handleFormat = async () => {
     if (isBusy) return;
-    if (window.confirm('Are you sure you want to delete all data? This action cannot be undone.')) {
+    if (window.confirm(`Are you sure you want to delete all data for ${datasetLabel(currentDs)}? Other indexes and years are untouched. This action cannot be undone.`)) {
       try {
         await formatDatabase();
-        alert('All data wiped successfully. App will reload.');
+        alert(`All data for ${datasetLabel(currentDs)} wiped successfully. App will reload.`);
         window.location.reload();
       } catch (err) {
         console.error(err);
@@ -540,9 +543,9 @@ function SettingsModal({ onClose }) {
           <div className="flex flex-col gap-4 py-2">
             {/* Export */}
             <div>
-              <h3 className="font-label-lg text-label-lg text-on-surface">Export Database</h3>
+              <h3 className="font-label-lg text-label-lg text-on-surface">Export Database — Everything</h3>
               <p className="text-on-surface-variant text-[13px] mb-3">
-                Download all your journals, remarks, and charts as a single portable file.
+                Download your whole journal — every index and every year — as one single portable file.
                 Images are exported at <strong>full quality</strong> — no re-compression.
               </p>
               <button
@@ -560,7 +563,7 @@ function SettingsModal({ onClose }) {
             <div>
               <h3 className="font-label-lg text-label-lg text-on-surface">Import Database</h3>
               <p className="text-on-surface-variant text-[13px] mb-1 text-error">
-                Warning: Importing will overwrite your current local database!
+                Warning: Importing replaces your entire local database with the backup file — all indexes and years.
               </p>
               <p className="text-on-surface-variant text-[12px] mb-3">
                 A progress bar will appear — do not close the app until it completes.
@@ -579,16 +582,16 @@ function SettingsModal({ onClose }) {
 
             {/* Format */}
             <div>
-              <h3 className="font-label-lg text-label-lg text-on-surface">Format All Data</h3>
+              <h3 className="font-label-lg text-label-lg text-on-surface">Format This Dataset — {datasetLabel(currentDs)}</h3>
               <p className="text-on-surface-variant text-[13px] mb-3 text-error">
-                Warning: This will permanently wipe all your journals, remarks, and charts.
+                Warning: This will permanently wipe every week, remark and chart for {datasetLabel(currentDs)} only. Other indexes and years are untouched.
               </p>
               <button
                 onClick={handleFormat}
                 className="w-full py-2 bg-error text-on-error hover:bg-error/90 rounded-lg font-label-md flex items-center justify-center gap-2 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">delete_forever</span>
-                Wipe Clean
+                Wipe Dataset
               </button>
             </div>
           </div>
@@ -695,6 +698,90 @@ function GoToModal({ onClose, onApply }) {
 }
 
 /* ═══════════════════════════════════════════
+   Add Dataset Modal — new (index, year) combination
+═══════════════════════════════════════════ */
+function AddDatasetModal({ onClose, onCreated }) {
+  const [indexName, setIndexName] = useState('');
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const existingIndexes = [...new Set(getDatasets().map((d) => d.index))];
+
+  useEffect(() => {
+    const fn = (e) => { if (e.key === 'Escape' && !saving) onClose(); };
+    document.addEventListener('keydown', fn);
+    return () => document.removeEventListener('keydown', fn);
+  }, [onClose, saving]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSaving(true);
+    try {
+      const ds = await createDataset(indexName, year);
+      await onCreated(ds.id);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+      <form onSubmit={handleSubmit} className="bg-surface-container-high rounded-xl p-6 w-[340px] shadow-2xl flex flex-col gap-4 animate-expand">
+        <div className="flex justify-between items-center">
+          <h2 className="font-headline-sm text-on-surface font-bold">Add index / year</h2>
+          <button type="button" onClick={onClose} disabled={saving} className="text-on-surface-variant hover:text-on-surface transition-colors p-1 rounded-full hover:bg-surface-bright disabled:opacity-30">
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+        <p className="text-on-surface-variant text-[13px]">
+          A new combination starts with an empty journal. Your other indexes and years are untouched.
+        </p>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[12px] font-label-md text-on-surface-variant">Index</span>
+          <input
+            data-testid="add-dataset-index-input"
+            list="dataset-index-list"
+            value={indexName}
+            onChange={(e) => setIndexName(e.target.value)}
+            placeholder="e.g. Bank Nifty"
+            autoFocus
+            className="w-full bg-[#2f2f2f] rounded-full border border-[#424242] px-4 py-2 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary text-[13px]"
+          />
+          <datalist id="dataset-index-list">
+            {existingIndexes.map((idx) => <option key={idx} value={idx} />)}
+          </datalist>
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[12px] font-label-md text-on-surface-variant">Year</span>
+          <input
+            data-testid="add-dataset-year-input"
+            type="number"
+            min={2000}
+            max={2100}
+            value={year}
+            onChange={(e) => setYear(e.target.value)}
+            className="w-full bg-[#2f2f2f] rounded-full border border-[#424242] px-4 py-2 text-on-surface focus:outline-none focus:ring-2 focus:ring-primary text-[13px]"
+          />
+        </label>
+        {error && <p className="text-error text-[13px]" data-testid="add-dataset-error">{error}</p>}
+        <button
+          type="submit"
+          data-testid="add-dataset-submit"
+          disabled={saving}
+          className="w-full py-2 bg-white text-black rounded-full font-label-md hover:opacity-90 transition-opacity disabled:opacity-50"
+        >
+          {saving ? 'Adding…' : 'Add dataset'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
    WeeklyJournal Page
 ═══════════════════════════════════════════ */
 export default function WeeklyJournal() {
@@ -712,6 +799,11 @@ export default function WeeklyJournal() {
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
+  const [datasets, setDatasets] = useState(() => getDatasets());
+  const [currentDataset, setCurrentDataset] = useState(() => getCurrentDataset());
+  const [showAddDataset, setShowAddDataset] = useState(false);
+  const [switchingDataset, setSwitchingDataset] = useState(false);
+
   const [dateFilter, setDateFilter] = useState(() => {
     try {
       const saved = sessionStorage.getItem('sb_date_filter');
@@ -754,6 +846,24 @@ export default function WeeklyJournal() {
       setScrollParent(node);
     }
   }, []);
+
+  /* ── Switch index/year dataset: reloads the grid with that dataset's weeks ── */
+  const handleSwitchDataset = useCallback(async (id) => {
+    if (id === getCurrentDataset().id || switchingDataset) return;
+    setSwitchingDataset(true);
+    try {
+      await switchDataset(id);
+      setDatasets(getDatasets());
+      setCurrentDataset(getCurrentDataset());
+      setAllTrades([...trades, ...getExtraWeeks()]);
+      setSearch('');
+      sessionStorage.removeItem('sb_last_week_id');
+      sessionStorage.removeItem('sb_last_day');
+      scrollContainerRef.current?.scrollTo({ top: 0, left: 0 });
+    } finally {
+      setSwitchingDataset(false);
+    }
+  }, [switchingDataset, setSearch]);
 
   // Multi-frame restoration to ensure Virtuoso and layout dimensions have settled
   useEffect(() => {
@@ -886,7 +996,7 @@ export default function WeeklyJournal() {
 
   /* ── Add new row ── */
   const addRow = useCallback(() => {
-    const weekId  = `week-custom-${Date.now()}`;
+    const weekId  = `week-custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; // random suffix: two rapid clicks must never share an id
     const newWeek = {
       id: weekId,
       weekStart: '',
@@ -1033,6 +1143,7 @@ export default function WeeklyJournal() {
 
       {/* ── Settings modal ── */}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showAddDataset && <AddDatasetModal onClose={() => setShowAddDataset(false)} onCreated={handleSwitchDataset} />}
       
       {/* ── GoTo modal ── */}
       {showGoTo && <GoToModal onClose={() => setShowGoTo(false)} onApply={setDateFilter} />}
@@ -1086,6 +1197,54 @@ export default function WeeklyJournal() {
                   Clear filter
                 </button>
               )}
+            </div>
+
+            {/* Centre: index + year — between the search bar and the zoom controls */}
+            <div className="flex items-center gap-2 shrink-0" data-testid="dataset-selector">
+              <div className="relative">
+                <select
+                  data-testid="dataset-index-select"
+                  aria-label="Index"
+                  value={currentDataset.index}
+                  disabled={switchingDataset}
+                  onChange={(e) => {
+                    const idx = e.target.value;
+                    const years = datasets.filter((d) => d.index === idx).map((d) => d.year);
+                    handleSwitchDataset(datasetIdFor(idx, Math.max(...years)));
+                  }}
+                  className="appearance-none bg-[#2f2f2f] border border-[#424242] rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
+                >
+                  {[...new Set(datasets.map((d) => d.index))].map((idx) => (
+                    <option key={idx} value={idx}>{idx}</option>
+                  ))}
+                </select>
+                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant pointer-events-none">expand_more</span>
+              </div>
+              <div className="relative">
+                <select
+                  data-testid="dataset-year-select"
+                  aria-label="Year"
+                  value={currentDataset.year}
+                  disabled={switchingDataset}
+                  onChange={(e) => handleSwitchDataset(datasetIdFor(currentDataset.index, Number(e.target.value)))}
+                  className="appearance-none bg-[#2f2f2f] border border-[#424242] rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
+                >
+                  {datasets.filter((d) => d.index === currentDataset.index).map((d) => d.year).sort((a, b) => b - a).map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant pointer-events-none">expand_more</span>
+              </div>
+              <button
+                onClick={() => setShowAddDataset(true)}
+                data-testid="add-dataset-btn"
+                aria-label="Add index or year"
+                title="Add index / year"
+                className="flex items-center justify-center w-8 h-8 rounded-full border border-[#424242] bg-[#2f2f2f] text-on-surface hover:bg-surface-bright transition-colors shrink-0"
+                style={{ fontSize: '18px', fontWeight: 700, lineHeight: 1 }}
+              >
+                +
+              </button>
             </div>
 
             {/* Right: zoom + add-row + settings */}

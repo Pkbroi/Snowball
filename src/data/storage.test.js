@@ -129,3 +129,159 @@ describe('Storage utility (Three-tier images + metadata)', () => {
     expect(storage.getStoredMedium('week-m', 'Monday')).toBeNull();
   });
 });
+
+describe('Datasets (index × year)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  it('defaults to Nifty 50 / 2026 on a fresh install', async () => {
+    const { getDatasets, getCurrentDataset } = await import('./storage');
+    expect(getDatasets()).toEqual([{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]);
+    expect(getCurrentDataset()).toEqual({ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 });
+  });
+
+  it('migrates legacy flat keys to Nifty 50 / 2026 on first run', async () => {
+    const storage = await import('./storage');
+    const { keys, set } = await import('idb-keyval');
+    // Simulate the pre-datasets database: wipe the registry, seed flat keys.
+    await clear();
+    await set('sb_extra_weeks', [{ id: 'week-1', days: [] }]);
+    await set('sb_notes_week-1_Monday', '<p>legacy note</p>');
+    await set('sb_rem_week-1', '<p>legacy remark</p>');
+    await storage.initStorage();
+
+    expect(storage.getExtraWeeks()).toEqual([{ id: 'week-1', days: [] }]);
+    expect(storage.getNotes('week-1', 'Monday')).toBe('<p>legacy note</p>');
+    expect(storage.getRemarks('week-1')).toBe('<p>legacy remark</p>');
+    const allKeys = await keys();
+    expect(allKeys).not.toContain('sb_extra_weeks');
+    expect(allKeys).toContain('sb_ds_nifty-50_2026__extra_weeks');
+    expect(allKeys).toContain('sb_ds_nifty-50_2026__notes_week-1_Monday');
+    expect(storage.getCurrentDataset().id).toBe('nifty-50_2026');
+  });
+
+  it('keeps data separate per dataset', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    await storage.createDataset('Bank Nifty', 2026);
+    await storage.switchDataset('bank-nifty_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual([]);
+    storage.setTags('week-1', 'Monday', ['BankWin']);
+    await storage.switchDataset('nifty-50_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['NiftyWin']);
+    await storage.switchDataset('bank-nifty_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['BankWin']);
+  });
+
+  it('createDataset returns the existing dataset instead of duplicating', async () => {
+    const storage = await import('./storage');
+    const a = await storage.createDataset('Bank Nifty', 2026);
+    const b = await storage.createDataset('Bank Nifty', 2026);
+    expect(a).toEqual(b);
+    expect(storage.getDatasets().filter((d) => d.id === 'bank-nifty_2026')).toHaveLength(1);
+  });
+
+  it('createDataset rejects bad input', async () => {
+    const storage = await import('./storage');
+    await expect(storage.createDataset('', 2026)).rejects.toThrow('Index name is required');
+    await expect(storage.createDataset('Nifty', 1999)).rejects.toThrow('Year must be between 2000 and 2100');
+  });
+
+  it('exports the whole database as one clean, key-sorted file', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    await storage.createDataset('Bank Nifty', 2026);
+    await storage.switchDataset('bank-nifty_2026');
+    storage.setTags('week-1', 'Monday', ['BankWin']);
+    // setTags writes to IndexedDB async — wait for it to land before exporting.
+    await vi.waitFor(async () => {
+      expect(await get('sb_ds_bank-nifty_2026__tags_week-1_Monday')).toEqual(['BankWin']);
+    });
+    const json = await storage.exportDatabase();
+    const data = JSON.parse(json);
+    // Both datasets in one file, registry included, no per-dataset marker.
+    expect(json).toContain('NiftyWin');
+    expect(json).toContain('BankWin');
+    expect(data).toContainEqual(['sb_datasets', [
+      { id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 },
+      { id: 'bank-nifty_2026', index: 'Bank Nifty', year: 2026 },
+    ]]);
+    expect(data).toContainEqual(['sb_current_dataset', 'bank-nifty_2026']);
+    expect(data.find(([k]) => k === 'sb_dataset')).toBeUndefined();
+    // Keys sorted: the file is deterministic and grouped by dataset.
+    const keys = data.map(([k]) => k);
+    expect(keys).toEqual([...keys].sort());
+  });
+
+  it('import restores the whole database, including the selected dataset', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    await storage.createDataset('Bank Nifty', 2026);
+    await storage.switchDataset('bank-nifty_2026');
+    storage.setTags('week-1', 'Monday', ['BankWin']);
+    await vi.waitFor(async () => {
+      expect(await get('sb_ds_bank-nifty_2026__tags_week-1_Monday')).toEqual(['BankWin']);
+    });
+    const backup = await storage.exportDatabase();
+
+    // Wipe everything, then restore from the single backup file.
+    await clear();
+    await storage.initStorage();
+    expect(storage.getTags('week-1', 'Monday')).toEqual([]);
+    await storage.importDatabase(backup);
+    expect(storage.getCurrentDataset().id).toBe('bank-nifty_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['BankWin']);
+    await storage.switchDataset('nifty-50_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['NiftyWin']);
+  });
+
+  it('import stores a data-URL image entry from a backup', async () => {
+    // NOTE: fake-indexeddb in jsdom structured-clones Blobs to plain
+    // objects, so byte-level export assertions cannot run here (see the
+    // image-quality describe above). The true byte-identical round trip
+    // is covered in tests/backup-roundtrip.spec.js in real Chromium.
+    // Here: a backup carrying an image data-URL imports and the entry
+    // is retrievable afterwards.
+    const storage = await import('./storage');
+    const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const backup = JSON.stringify([
+      ['sb_datasets', [{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]],
+      ['sb_current_dataset', 'nifty-50_2026'],
+      ['sb_ds_nifty-50_2026__img_week-1_Monday', redPng],
+      ['sb_ds_nifty-50_2026__meta_week-1_Monday', { width: 1, height: 1, size: 70, type: 'image/png', name: 'chart.png' }],
+    ]);
+    await storage.importDatabase(backup);
+    const img = await storage.getStoredImgAsync('week-1', 'Monday');
+    expect(img).toBeTruthy();
+    expect(storage.getImageMeta('week-1', 'Monday')).toEqual(
+      { width: 1, height: 1, size: 70, type: 'image/png', name: 'chart.png' });
+  });
+
+  it('legacy flat backup imports into Nifty 50 / 2026', async () => {
+    const storage = await import('./storage');
+    const legacy = JSON.stringify([
+      ['sb_tags_week-1_Monday', ['LegacyWin']],
+      ['sb_extra_weeks', [{ id: 'week-1', days: [] }]],
+    ]);
+    await storage.importDatabase(legacy);
+    expect(storage.getCurrentDataset().id).toBe('nifty-50_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['LegacyWin']);
+    expect(storage.getExtraWeeks()).toEqual([{ id: 'week-1', days: [] }]);
+  });
+
+  it('format wipes only the current dataset', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    await storage.createDataset('Bank Nifty', 2026);
+    await storage.switchDataset('bank-nifty_2026');
+    storage.setTags('week-1', 'Monday', ['BankWin']);
+    await storage.formatDatabase();
+    expect(storage.getTags('week-1', 'Monday')).toEqual([]);
+    await storage.switchDataset('nifty-50_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['NiftyWin']);
+  });
+});
