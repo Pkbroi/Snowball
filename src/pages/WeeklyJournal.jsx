@@ -992,12 +992,17 @@ export default function WeeklyJournal() {
     };
   }, [scrollParent, targetWeekId, targetDay]);
 
-  // Persist scroll position on unmount
+  // Persist scroll position on unmount — but only while the container is
+  // still in the document. This cleanup runs after the node is detached,
+  // and a detached scroll container reports scrollTop/scrollLeft as 0;
+  // writing that clobbered the position goToDetail() had just saved, so
+  // coming back from a cell always started at the top of the journal.
   useEffect(() => {
     return () => {
-      if (scrollContainerRef.current && !isRestoringRef.current) {
-        sessionStorage.setItem('sb_scroll_top', scrollContainerRef.current.scrollTop.toString());
-        sessionStorage.setItem('sb_scroll_left', scrollContainerRef.current.scrollLeft.toString());
+      const el = scrollContainerRef.current;
+      if (el?.isConnected && !isRestoringRef.current) {
+        sessionStorage.setItem('sb_scroll_top', el.scrollTop.toString());
+        sessionStorage.setItem('sb_scroll_left', el.scrollLeft.toString());
       }
     };
   }, []);
@@ -1016,8 +1021,9 @@ export default function WeeklyJournal() {
 
   const handleScroll = useCallback((e) => {
     if (isRestoringRef.current) return;
-    const top = e.target.scrollTop;
-    const left = e.target.scrollLeft;
+    const el = e.target;
+    const top = el.scrollTop;
+    const left = el.scrollLeft;
     // Update the in-memory ref synchronously (safe — no layout triggered)
     scrollPos.current = { top, left };
     // rAF-throttle the sessionStorage writes: sessionStorage.setItem() is a
@@ -1025,8 +1031,13 @@ export default function WeeklyJournal() {
     // visible jank when fired at scroll frequency (60–120×/sec on fast devices).
     if (scrollRAF.current) cancelAnimationFrame(scrollRAF.current);
     scrollRAF.current = requestAnimationFrame(() => {
-      sessionStorage.setItem('sb_scroll_top', top.toString());
-      sessionStorage.setItem('sb_scroll_left', left.toString());
+      // Skip the write if the container was detached since the scroll
+      // event — its position reads as 0 and would clobber the position
+      // saved for the return trip (same trap as the unmount cleanup).
+      if (el.isConnected) {
+        sessionStorage.setItem('sb_scroll_top', top.toString());
+        sessionStorage.setItem('sb_scroll_left', left.toString());
+      }
       scrollRAF.current = null;
     });
   }, []);
