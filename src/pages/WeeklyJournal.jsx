@@ -203,7 +203,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
+        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         title="Double-click to open detail"
@@ -223,7 +223,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'bg-white/10' : ''}`}
+      className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -257,6 +257,11 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
+  // Search matches for the non-day cells: remarks column and week label.
+  // Same amber outline as DayCell, so every shown row explains itself.
+  const remarksMatch = searchHits ? searchHits.has(`rem:${trade.id}`) : false;
+  const labelMatch = searchHits ? searchHits.has(`lbl:${trade.id}`) : false;
+
   // Resolved label (localStorage > static)
   const labelStored = getWeekLabel(trade.id);
   const [weekStart, setWeekStart] = useState(labelStored?.weekStart ?? trade.weekStart);
@@ -287,7 +292,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
     >
 
       {/* ── Week label — editable ── */}
-      <div className="p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del">
+      <div data-testid={`week-label-${trade.id}`} className={`p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del ${labelMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}>
         {trade.isCustom && (
           <button 
             onClick={() => onDeleteWeek(trade.id)}
@@ -360,13 +365,13 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
           weekEnd={weekEnd}
           remarks={trade.remarks}
           search={search}
-          matchesSearch={searchHits ? searchHits.has(`${trade.id}|${day.day}`) : false}
+          matchesSearch={searchHits ? searchHits.has(`day:${trade.id}|${day.day}`) : false}
         />
       ))}
 
       {/* ── Remarks — click to expand ── */}
       <div 
-        className="p-[calc(12px*var(--tz))] flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors"
+        className={`p-[calc(12px*var(--tz))] flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors ${remarksMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
         data-testid={`remarks-cell-${trade.id}`}
         onClick={() => onOpenRemarks(trade)}
         title="Click to add or edit remarks"
@@ -1152,9 +1157,9 @@ export default function WeeklyJournal() {
         if (!passesDateFilter) return false;
       }
 
-      // 2. Search Logic
+      // 2. Search Logic (case-insensitive: query and all haystacks lowercased)
       if (!search.trim()) return true;
-      const q   = search.toLowerCase();
+      const q   = search.trim().toLowerCase();
       const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
       const rem = getRemarksText(t.id, t.remarks ?? '');
       return (
@@ -1170,19 +1175,26 @@ export default function WeeklyJournal() {
     });
   }, [allTrades, dateFilter, search]);
 
-  // Search index: built ONCE per search change (one pass over all trades),
-  // as a Set of "weekId|day" keys. DayCell/WeekRow just look keys up —
-  // previously every cell ran getNotesText + getTags on every render,
-  // so typing a search query cost O(n×5) string ops per keystroke.
+  // Search index: built ONCE per search change (one pass over all trades).
+  // One Set with prefixed keys, so every match source the row filter uses
+  // is highlighted — day cells (notes/tags), the remarks cell, and the
+  // week-label cell. Previously only day cells were indexed, so a remarks
+  // or label match showed a whole week with nothing marked, and the day
+  // highlight was a faint bg-white/10 tint that was easy to miss.
+  // Query is trimmed + lowercased, haystacks lowercased: search is fully
+  // case-insensitive ("gapup" == "GapUp" == "GAPUP").
   const searchHits = useMemo(() => {
     const hits = new Set();
     if (!search.trim()) return hits;
     const q = search.trim().toLowerCase();
     for (const t of allTrades) {
+      const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
+      if (lbl.weekStart.toLowerCase().includes(q) || lbl.weekEnd.toLowerCase().includes(q)) hits.add(`lbl:${t.id}`);
+      if (getRemarksText(t.id, t.remarks ?? '').toLowerCase().includes(q)) hits.add(`rem:${t.id}`);
       for (const d of t.days) {
         const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
         const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
-        if (notesMatch || tagsMatch) hits.add(`${t.id}|${d.day}`);
+        if (notesMatch || tagsMatch) hits.add(`day:${t.id}|${d.day}`);
       }
     }
     return hits;
