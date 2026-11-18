@@ -1284,13 +1284,13 @@ export default function WeeklyJournal() {
                     const years = datasets.filter((d) => d.index === idx).map((d) => d.year);
                     handleSwitchDataset(datasetIdFor(idx, Math.max(...years)));
                   }}
-                  className="appearance-none bg-[#2f2f2f] border border-[#424242] rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
+                  className="appearance-none bg-black border border-black rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md font-bold text-white focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
                 >
                   {[...new Set(datasets.map((d) => d.index))].map((idx) => (
                     <option key={idx} value={idx}>{idx}</option>
                   ))}
                 </select>
-                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant pointer-events-none">expand_more</span>
+                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-white pointer-events-none">expand_more</span>
               </div>
               <div className="relative">
                 <select
@@ -1299,20 +1299,20 @@ export default function WeeklyJournal() {
                   value={currentDataset.year}
                   disabled={switchingDataset}
                   onChange={(e) => handleSwitchDataset(datasetIdFor(currentDataset.index, Number(e.target.value)))}
-                  className="appearance-none bg-[#2f2f2f] border border-[#424242] rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
+                  className="appearance-none bg-black border border-black rounded-full pl-3 pr-7 py-1.5 text-[13px] font-label-md font-bold text-white focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer disabled:opacity-50"
                 >
                   {datasets.filter((d) => d.index === currentDataset.index).map((d) => d.year).sort((a, b) => b - a).map((y) => (
                     <option key={y} value={y}>{y}</option>
                   ))}
                 </select>
-                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant pointer-events-none">expand_more</span>
+                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-white pointer-events-none">expand_more</span>
               </div>
               <button
                 onClick={() => setShowAddDataset(true)}
                 data-testid="add-dataset-btn"
                 aria-label="Add index or year"
                 title="Add index / year"
-                className="flex items-center justify-center w-8 h-8 rounded-full border border-[#424242] bg-[#2f2f2f] text-on-surface hover:bg-surface-bright transition-colors shrink-0"
+                className="flex items-center justify-center w-8 h-8 rounded-full border border-black bg-black text-white hover:bg-[#1a1a1a] transition-colors shrink-0"
                 style={{ fontSize: '18px', fontWeight: 700, lineHeight: 1 }}
               >
                 +
@@ -1322,7 +1322,7 @@ export default function WeeklyJournal() {
             {/* Right: zoom + add-row + settings */}
             <div className="flex items-center gap-2 text-on-surface-variant shrink-0">
               {/* Zoom controls */}
-              <div className="flex items-center gap-1 bg-[#2f2f2f] border border-[#424242] rounded-full px-1 py-0.5">
+              <div className="flex items-center gap-1 bg-black border border-black rounded-full px-1 py-0.5">
                 <button
                   onClick={zoomOut}
                   data-testid="zoom-out-btn"
@@ -1334,7 +1334,7 @@ export default function WeeklyJournal() {
                 >
                   −
                 </button>
-                <span className="text-[11px] font-bold text-on-surface-variant w-9 text-center select-none tabular-nums">
+                <span className="text-[11px] font-bold text-white w-9 text-center select-none tabular-nums">
                   {Math.round(tableZoom * 100)}%
                 </span>
                 <button
@@ -1355,14 +1355,14 @@ export default function WeeklyJournal() {
                 onClick={addRow}
                 data-testid="add-week-btn"
                 aria-label="Add new week"
-                className="flex items-center justify-center w-9 h-9 rounded-full border border-outline-variant transition-colors hover:opacity-90 active:scale-95"
-                style={{ backgroundColor: '#ffffff', color: '#000000', fontSize: '22px', fontWeight: 900, lineHeight: 1 }}
+                className="flex items-center justify-center w-9 h-9 rounded-full border border-black transition-colors hover:opacity-90 active:scale-95"
+                style={{ backgroundColor: '#000000', color: '#ffffff', fontSize: '22px', fontWeight: 900, lineHeight: 1 }}
                 title="Add new week (Ctrl+N)"
               >
                 +
               </button>
 
-              <button onClick={() => setShowSettings(true)} data-testid="settings-btn" aria-label="Settings" className="p-2 hover:bg-surface-bright transition-colors rounded-full flex items-center justify-center" title="Settings">
+              <button onClick={() => setShowSettings(true)} data-testid="settings-btn" aria-label="Settings" className="w-9 h-9 flex items-center justify-center rounded-full bg-black border border-black text-white hover:bg-[#1a1a1a] transition-colors" title="Settings">
                 <span className="material-symbols-outlined">settings</span>
               </button>
             </div>
