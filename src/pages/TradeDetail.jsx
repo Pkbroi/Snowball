@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations } from '../data/storage.js';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
@@ -190,6 +190,27 @@ function ImageResizeHandler({ quillRef }) {
 }
 
 /* ─── Page ─── */
+// Thick filled arrow for chart annotations (toolbar + placed marks).
+// dir 'up' | 'down'; the tip is the point that lands on the chart.
+function AnnArrow({ color, dir = 'up', size = 26 }) {
+  const d = dir === 'up'
+    ? 'M12 1 L21 13 H15.5 V31 H8.5 V13 H3 Z'
+    : 'M12 31 L3 19 H8.5 V1 H15.5 V19 H21 Z';
+  return (
+    <svg width={size} height={(size * 32) / 24} viewBox="0 0 24 32" aria-hidden="true">
+      <path d={d} fill={color} stroke="rgba(0,0,0,0.5)" strokeWidth="1" />
+    </svg>
+  );
+}
+
+const ANN_ARROW_STYLE = {
+  'arrow-green-up': { color: '#22c55e', dir: 'up' },
+  'arrow-green-down': { color: '#22c55e', dir: 'down' },
+  'arrow-red-up': { color: '#ef4444', dir: 'up' },
+  'arrow-red-down': { color: '#ef4444', dir: 'down' },
+  'arrow-yellow': { color: '#eab308', dir: 'down' },
+};
+
 export default function TradeDetail() {
   const navigate  = useNavigate();
   const { id }    = useParams();
@@ -242,6 +263,11 @@ export default function TradeDetail() {
   const lbDragged = useRef(false);
   const lbZoomRef = useRef(1);
   const lbPanRef = useRef({ x: 0, y: 0 });
+  // Annotation actions (disarm / delete-selected / reset), assigned by the
+  // annotation state block below — the Escape handler above the state
+  // declarations calls through this ref so it never closes over stale
+  // tool/selection values.
+  const annActionsRef = useRef({});
 
   // Clamp pan so the zoomed image can't be dragged off-screen.
   const clampLbPan = useCallback((pan, zoom) => {
@@ -334,7 +360,19 @@ export default function TradeDetail() {
   // stopped while open so wheel input cannot scroll the page behind it.
   useEffect(() => {
     if (!expanded) return;
-    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    const onKey = (e) => {
+      // While typing in a comment box, Escape only leaves the box.
+      const ae = document.activeElement;
+      if (e.key === 'Escape' && ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) { ae.blur(); return; }
+      // With a tool armed or a mark selected, Escape disarms/deselects
+      // instead of closing the lightbox.
+      if (e.key === 'Escape' && annActionsRef.current.disarm?.()) return;
+      if (e.key === 'Escape') setExpanded(false);
+      // Delete / Backspace removes the selected mark (never while typing).
+      if ((e.key === 'Delete' || e.key === 'Backspace') && ae?.tagName !== 'TEXTAREA' && ae?.tagName !== 'INPUT') {
+        annActionsRef.current.deleteSelected?.();
+      }
+    };
     document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -380,10 +418,180 @@ export default function TradeDetail() {
   const [pickerValue, setPickerValue] = useState(() => getTradeDate(weekId, dayName));
   const dateInputRef = useRef(null);
 
+  /* ── Chart annotations (lightbox only) ─────────────────────────────
+     A mark is { id, type, x, y, text? } with x/y in % of the displayed
+     picture. Types: 'line' (TradingView-style horizontal line),
+     'arrow-green-up' | 'arrow-green-down' (entry), 'arrow-red-up' |
+     'arrow-red-down' (exit), 'arrow-yellow' (spot marker), 'comment'.
+     Stored per week+day (storage.js) so marks survive reload and are
+     included in the whole-database backup. The overlay is sized to the
+     displayed picture rect, so % coords stay glued to the chart under
+     pan/zoom. The toolbar is icons only and floats on top of the
+     zoomed chart. ─────────────────────────────────────────────────── */
+  const [annotations, setAnnotationsState] = useState(() => getAnnotations(weekId, dayName));
+  const [annTool, setAnnTool] = useState('select');
+  const [selectedAnnId, setSelectedAnnId] = useState(null);
+  const [focusAnnId, setFocusAnnId] = useState(null);
+  const [clearArmed, setClearArmed] = useState(false);
+  const [picRect, setPicRect] = useState(null);
+  const annDragRef = useRef(null);
+  // A click that places a mark fires on the nearest common ancestor of
+  // the mousedown/mouseup targets — the overlay, not the new mark — so
+  // without this the click right after placing a comment (which disarms
+  // to select) would look like an empty select-mode click and close the
+  // lightbox. Placement stamps the time; the close handler ignores
+  // clicks in the same gesture (the follow-up click lands <50ms later).
+  const justPlacedRef = useRef(0);
+
+  const persistAnnotations = useCallback((next) => {
+    setAnnotationsState(next);
+    setAnnotations(weekId, dayName, next);
+  }, [weekId, dayName]);
+
+  // Displayed picture rect (viewport px): the lightbox image is
+  // object-contain in a full-viewport box, scaled by fit*zoom about the
+  // centre, then panned — same math as clampLbPan.
+  const computePicRect = useCallback(() => {
+    const img = lbImgRef.current;
+    const cont = lbContainerRef.current;
+    if (!img || !cont || !img.naturalWidth) return null;
+    const r = cont.getBoundingClientRect();
+    const fit = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
+    const w = img.naturalWidth * fit * lbZoomRef.current;
+    const h = img.naturalHeight * fit * lbZoomRef.current;
+    return {
+      left: (r.width - w) / 2 + lbPanRef.current.x,
+      top: (r.height - h) / 2 + lbPanRef.current.y,
+      width: w, height: h,
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) { setPicRect(null); return; }
+    const update = () => setPicRect(computePicRect());
+    update();
+    const cont = lbContainerRef.current;
+    const ro = cont ? new ResizeObserver(update) : null;
+    ro?.observe(cont);
+    window.addEventListener('resize', update);
+    return () => { ro?.disconnect(); window.removeEventListener('resize', update); };
+  }, [expanded, computePicRect, lbZoom, lbPan, fullImg, mediumImg, chartImg]);
+
+  const pointToPct = useCallback((clientX, clientY) => {
+    const r = picRect;
+    if (!r || r.width <= 0 || r.height <= 0) return null;
+    return {
+      x: Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100)),
+      y: Math.max(0, Math.min(100, ((clientY - r.top) / r.height) * 100)),
+    };
+  }, [picRect]);
+
+  const placeAnnotation = useCallback((e) => {
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    justPlacedRef.current = Date.now();
+    const nid = `ann_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    if (annTool === 'line') {
+      persistAnnotations([...annotations, { id: nid, type: 'line', x: 50, y: p.y }]);
+    } else if (annTool === 'comment') {
+      persistAnnotations([...annotations, { id: nid, type: 'comment', x: Math.min(p.x, 86), y: Math.min(p.y, 86), text: '' }]);
+      setSelectedAnnId(nid);
+      setFocusAnnId(nid);
+      setAnnTool('select'); // typing starts — disarm so later clicks don't drop more boxes
+    } else {
+      persistAnnotations([...annotations, { id: nid, type: annTool, x: p.x, y: p.y }]);
+    }
+    setClearArmed(false);
+  }, [annTool, annotations, persistAnnotations, pointToPct]);
+
+  const deleteSelectedAnn = useCallback(() => {
+    if (!selectedAnnId) return false;
+    persistAnnotations(annotations.filter((a) => a.id !== selectedAnnId));
+    setSelectedAnnId(null);
+    return true;
+  }, [annotations, persistAnnotations, selectedAnnId]);
+
+  // Actions the document-level Escape/Delete handler calls through.
+  useEffect(() => {
+    annActionsRef.current = {
+      disarm: () => {
+        if (annTool === 'select' && !selectedAnnId) return false;
+        setAnnTool('select');
+        setSelectedAnnId(null);
+        setClearArmed(false);
+        return true;
+      },
+      deleteSelected: () => { deleteSelectedAnn(); },
+      reset: () => { setAnnTool('select'); setSelectedAnnId(null); setClearArmed(false); },
+    };
+  }, [annTool, selectedAnnId, deleteSelectedAnn]);
+
+  // Drag a mark in select mode (lines move vertically only).
+  const onAnnPointerDown = (e, ann) => {
+    if (annTool !== 'select') return;
+    e.stopPropagation();
+    setSelectedAnnId(ann.id);
+    setClearArmed(false);
+    annDragRef.current = {
+      id: ann.id, pointerId: e.pointerId,
+      startX: e.clientX, startY: e.clientY,
+      origX: ann.x, origY: ann.y, moved: false, latest: null,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onAnnPointerMove = (e) => {
+    const d = annDragRef.current;
+    if (!d || d.pointerId !== e.pointerId || !picRect) return;
+    const dxPct = ((e.clientX - d.startX) / picRect.width) * 100;
+    const dyPct = ((e.clientY - d.startY) / picRect.height) * 100;
+    if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) > 2) d.moved = true;
+    const clamp01 = (v) => Math.max(0, Math.min(100, v));
+    const next = annotations.map((a) => {
+      if (a.id !== d.id) return a;
+      if (a.type === 'line') return { ...a, y: clamp01(d.origY + dyPct) };
+      return { ...a, x: clamp01(d.origX + dxPct), y: clamp01(d.origY + dyPct) };
+    });
+    d.latest = next;
+    setAnnotationsState(next);
+  };
+  const onAnnPointerUp = (e) => {
+    const d = annDragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    annDragRef.current = null;
+    if (d.moved && d.latest) persistAnnotations(d.latest);
+  };
+
+  const updateAnnText = useCallback((id, text) => {
+    persistAnnotations(annotations.map((a) => (a.id === id ? { ...a, text } : a)));
+  }, [annotations, persistAnnotations]);
+
+  // One toolbar button: icon only, no text. Active tool inverts to white.
+  const annToolBtn = (tool, label, content) => (
+    <button
+      key={tool}
+      data-testid={`ann-tool-${tool}`}
+      title={label}
+      aria-label={label}
+      aria-pressed={annTool === tool}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        setAnnTool(annTool === tool ? 'select' : tool);
+        setSelectedAnnId(null);
+        setClearArmed(false);
+      }}
+      className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${annTool === tool ? 'bg-white text-black' : 'text-on-surface hover:bg-surface-bright'}`}
+    >
+      {content}
+    </button>
+  );
+
   useEffect(() => {
     if (trade) {
       setChartImg(resolveImg(weekId, dayName, trade.day?.img));
       setTagsState(getTags(weekId, dayName));
+      setAnnotationsState(getAnnotations(weekId, dayName));
+      setAnnTool('select');
+      setSelectedAnnId(null);
 
       const savedTradeDate = getTradeDate(weekId, dayName);
       setTradeDateState(savedTradeDate);
@@ -622,6 +830,33 @@ export default function TradeDetail() {
           >
             <span className="material-symbols-outlined">close</span>
           </button>
+
+          {/* ── Annotation toolbar — icons only, floating on top of the zoomed chart ── */}
+          {picRect && (
+            <div
+              data-testid="ann-toolbar"
+              className="absolute top-4 left-4 z-[70] flex flex-col items-center gap-1 rounded-full bg-surface-container/90 border border-outline-variant p-1.5"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {annToolBtn('select', 'Select / move', <span className="material-symbols-outlined text-[20px]">near_me</span>)}
+              {annToolBtn('line', 'Horizontal line', <span className="material-symbols-outlined text-[20px]">horizontal_rule</span>)}
+              <div className="w-6 border-t border-outline-variant/50" />
+              {annToolBtn('arrow-green-up', 'Green up arrow — entry', <AnnArrow color="#22c55e" dir="up" size={20} />)}
+              {annToolBtn('arrow-green-down', 'Green down arrow — entry', <AnnArrow color="#22c55e" dir="down" size={20} />)}
+              {annToolBtn('arrow-red-up', 'Red up arrow — exit', <AnnArrow color="#ef4444" dir="up" size={20} />)}
+              {annToolBtn('arrow-red-down', 'Red down arrow — exit', <AnnArrow color="#ef4444" dir="down" size={20} />)}
+              {annToolBtn('arrow-yellow', 'Yellow marker arrow', <AnnArrow color="#eab308" dir="down" size={20} />)}
+              {annToolBtn('comment', 'Comment box', <span className="material-symbols-outlined text-[20px]">add_comment</span>)}
+              <div className="w-6 border-t border-outline-variant/50" />
+              <button data-testid="ann-delete" title="Delete selected mark" aria-label="Delete selected mark" disabled={!selectedAnnId} onClick={(e) => { e.stopPropagation(); deleteSelectedAnn(); }} className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright disabled:opacity-30 transition-colors">
+                <span className="material-symbols-outlined text-[20px]">delete</span>
+              </button>
+              <button data-testid="ann-clear" title={clearArmed ? 'Tap again to clear all marks' : 'Clear all marks'} aria-label="Clear all marks" disabled={annotations.length === 0} onClick={(e) => { e.stopPropagation(); if (clearArmed) { persistAnnotations([]); setSelectedAnnId(null); setClearArmed(false); } else { setClearArmed(true); setTimeout(() => setClearArmed(false), 3000); } }} className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${clearArmed ? 'bg-red-500/20 text-red-400' : 'text-on-surface hover:bg-surface-bright'}`}>
+                <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+              </button>
+            </div>
+          )}
           {/* Full-res source, sized to FILL the viewport (not its natural
               480px thumbnail size). w-full/h-full + object-contain scales
               the image up to the viewport while preserving aspect ratio;
@@ -639,9 +874,96 @@ export default function TradeDetail() {
             fetchPriority="high"
             draggable={false}
             onClick={(e) => e.stopPropagation()}
+            onLoad={() => setPicRect(computePicRect())}
             style={{ transform: `translate(${lbPan.x}px, ${lbPan.y}px) scale(${lbZoom})`, transformOrigin: 'center center' }}
             className={`relative z-30 pointer-events-none h-full w-full object-contain transition-opacity duration-200 ${fullLoaded ? 'opacity-100' : 'opacity-60 blur-[2px]'}`}
           />
+          {/* ── Annotation overlay — sized to the displayed picture so % coords track pan/zoom ── */}
+          {picRect && (
+            <div
+              data-testid="ann-overlay"
+              className="absolute z-40"
+              style={{ left: picRect.left, top: picRect.top, width: picRect.width, height: picRect.height }}
+              onPointerDown={(e) => {
+                if (annTool !== 'select') {
+                  // preventDefault stops the compatibility mousedown whose
+                  // default action would blur the comment box React just
+                  // focused during this same pointerdown.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  placeAnnotation(e);
+                }
+                // Select mode: let the event bubble to the container (pan / backdrop close).
+              }}
+              onClick={(e) => {
+                if (annTool === 'select' && e.target === e.currentTarget && !lbDragged.current && Date.now() - justPlacedRef.current > 300) setExpanded(false);
+              }}
+            >
+              {annotations.map((a) => {
+                const selected = a.id === selectedAnnId;
+                if (a.type === 'line') {
+                  return (
+                    <div key={a.id} data-testid="ann-mark" data-ann-type="line"
+                      className="absolute left-0 right-0 cursor-move touch-none"
+                      style={{ top: `${a.y}%`, height: 12, transform: 'translateY(-50%)' }}
+                      onPointerDown={(e) => { if (annTool === 'select') onAnnPointerDown(e, a); }}
+                      onPointerMove={onAnnPointerMove}
+                      onPointerUp={onAnnPointerUp}
+                    >
+                      <div className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 ${selected ? 'h-[3px] bg-amber-400' : 'h-[2px] bg-white'}`} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.65)' }} />
+                      {selected && (
+                        <>
+                          <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-amber-400 rounded-sm" />
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-2.5 h-2.5 bg-amber-400 rounded-sm" />
+                        </>
+                      )}
+                    </div>
+                  );
+                }
+                if (a.type === 'comment') {
+                  return (
+                    <div key={a.id} data-testid="ann-mark" data-ann-type="comment"
+                      className={`absolute rounded ${selected ? 'ring-2 ring-white/70' : ''}`}
+                      style={{ left: `${a.x}%`, top: `${a.y}%`, width: 180 }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        if (annTool === 'select' && !e.target.closest('textarea')) onAnnPointerDown(e, a);
+                      }}
+                      onPointerMove={onAnnPointerMove}
+                      onPointerUp={onAnnPointerUp}
+                    >
+                      <textarea
+                        data-testid="ann-comment-text"
+                        value={a.text ?? ''}
+                        rows={2}
+                        placeholder="Type a comment…"
+                        ref={(el) => { if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
+                        onChange={(e) => updateAnnText(a.id, e.target.value)}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
+                        className="w-full min-h-[48px] resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold"
+                      />
+                    </div>
+                  );
+                }
+                const style = ANN_ARROW_STYLE[a.type];
+                if (!style) return null;
+                const isUp = style.dir === 'up';
+                return (
+                  <div key={a.id} data-testid="ann-mark" data-ann-type={a.type}
+                    className={`absolute cursor-move touch-none ${selected ? 'outline outline-2 outline-white rounded-sm' : ''}`}
+                    style={{ left: `${a.x}%`, top: `${a.y}%`, transform: isUp ? 'translate(-50%, 0)' : 'translate(-50%, -100%)', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))' }}
+                    onPointerDown={(e) => { if (annTool === 'select') onAnnPointerDown(e, a); }}
+                    onPointerMove={onAnnPointerMove}
+                    onPointerUp={onAnnPointerUp}
+                  >
+                    <AnnArrow color={style.color} dir={style.dir} size={26} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {/* Zoom controls */}
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-full bg-surface-container/90 border border-outline-variant px-2 py-1" data-testid="lightbox-zoom-controls">
             <button onClick={(e) => { e.stopPropagation(); applyLbZoom(lbZoomRef.current / 1.25); }} data-testid="lightbox-zoom-out" aria-label="Zoom out" className="w-8 h-8 rounded-full text-on-surface hover:bg-surface-bright flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">zoom_out</span></button>

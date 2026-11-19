@@ -741,6 +741,8 @@ export const deleteWeekData = (weekId) => {
     del(metaKey(weekId, dayName));
     memCache.delete(tagsKey(weekId, dayName));
     del(tagsKey(weekId, dayName));
+    memCache.delete(annKey(weekId, dayName));
+    del(annKey(weekId, dayName));
     memCache.delete(dateKey(weekId, dayName));
     del(dateKey(weekId, dayName));
   });
@@ -774,6 +776,24 @@ export const setTags = (weekId, dayName, tags) => {
   } else {
     memCache.delete(tagsKey(weekId, dayName));
     del(tagsKey(weekId, dayName));
+  }
+};
+
+/* ─── Chart Annotations (lightbox, per day) ───
+   One JSON array per day: [{ id, type, x, y, text? }] with x/y in % of
+   the displayed picture. Types: 'line' | 'arrow-green-up' |
+   'arrow-green-down' | 'arrow-red-up' | 'arrow-red-down' |
+   'arrow-yellow' | 'comment'. Stored like tags (memCache + IndexedDB),
+   so backup/export picks the key up automatically (sb_ds_ prefix). */
+const annKey = (weekId, dayName) => `${dsPrefix()}ann_${weekId}_${dayName}`;
+export const getAnnotations = (weekId, dayName) => memCache.get(annKey(weekId, dayName)) ?? [];
+export const setAnnotations = (weekId, dayName, anns) => {
+  if (anns && anns.length > 0) {
+    memCache.set(annKey(weekId, dayName), anns);
+    set(annKey(weekId, dayName), anns);
+  } else {
+    memCache.delete(annKey(weekId, dayName));
+    del(annKey(weekId, dayName));
   }
 };
 
