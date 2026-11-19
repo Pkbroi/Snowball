@@ -126,7 +126,8 @@ test.describe('Chart annotations (v4.5)', () => {
     const overlay = page.getByTestId('ann-overlay');
     await page.getByTestId('ann-tool-arrow-red-down').click();
     const box = await overlay.boundingBox();
-    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    // Click clear of the top-centre toolbar band.
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.5);
     const mark = page.locator('[data-testid="ann-mark"][data-ann-type="arrow-red-down"]');
     await expect(mark).toHaveCount(1);
     // Back to select: click the armed tool again, then click the mark.

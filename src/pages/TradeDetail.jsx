@@ -835,20 +835,20 @@ export default function TradeDetail() {
           {picRect && (
             <div
               data-testid="ann-toolbar"
-              className="absolute top-4 left-4 z-[70] flex flex-col items-center gap-1 rounded-full bg-surface-container/90 border border-outline-variant p-1.5"
+              className="absolute top-4 left-1/2 -translate-x-1/2 z-[70] flex flex-row items-center gap-1 rounded-full bg-surface-container/90 border border-outline-variant p-1.5"
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
             >
               {annToolBtn('select', 'Select / move', <span className="material-symbols-outlined text-[20px]">near_me</span>)}
               {annToolBtn('line', 'Horizontal line', <span className="material-symbols-outlined text-[20px]">horizontal_rule</span>)}
-              <div className="w-6 border-t border-outline-variant/50" />
+              <div className="h-6 border-l border-outline-variant/50" />
               {annToolBtn('arrow-green-up', 'Green up arrow — entry', <AnnArrow color="#22c55e" dir="up" size={20} />)}
               {annToolBtn('arrow-green-down', 'Green down arrow — entry', <AnnArrow color="#22c55e" dir="down" size={20} />)}
               {annToolBtn('arrow-red-up', 'Red up arrow — exit', <AnnArrow color="#ef4444" dir="up" size={20} />)}
               {annToolBtn('arrow-red-down', 'Red down arrow — exit', <AnnArrow color="#ef4444" dir="down" size={20} />)}
               {annToolBtn('arrow-yellow', 'Yellow marker arrow', <AnnArrow color="#eab308" dir="down" size={20} />)}
               {annToolBtn('comment', 'Comment box', <span className="material-symbols-outlined text-[20px]">add_comment</span>)}
-              <div className="w-6 border-t border-outline-variant/50" />
+              <div className="h-6 border-l border-outline-variant/50" />
               <button data-testid="ann-delete" title="Delete selected mark" aria-label="Delete selected mark" disabled={!selectedAnnId} onClick={(e) => { e.stopPropagation(); deleteSelectedAnn(); }} className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright disabled:opacity-30 transition-colors">
                 <span className="material-symbols-outlined text-[20px]">delete</span>
               </button>
