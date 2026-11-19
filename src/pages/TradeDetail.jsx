@@ -910,7 +910,7 @@ export default function TradeDetail() {
                       onPointerMove={onAnnPointerMove}
                       onPointerUp={onAnnPointerUp}
                     >
-                      <div className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 ${selected ? 'h-[3px] bg-amber-400' : 'h-[2px] bg-white'}`} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.65)' }} />
+                      <div className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 ${selected ? 'h-[3px] bg-amber-400' : 'h-[2px] bg-black'}`} style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.65)' }} />
                       {selected && (
                         <>
                           <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-amber-400 rounded-sm" />
