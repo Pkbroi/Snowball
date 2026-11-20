@@ -7,7 +7,7 @@ import { trades } from '../data/trades.js';
 import {
   setStoredImg, getStoredImgAsync,
   getStoredImg, getStoredThumb,
-  getRemarks, setRemarks, getRemarksText,
+  getRemarks, setRemarks, getRemarksText, getRemarksPreview,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate,
@@ -253,7 +253,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits }) {
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits, remarksVersion }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -261,6 +261,12 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
   // Same amber outline as DayCell, so every shown row explains itself.
   const remarksMatch = searchHits ? searchHits.has(`rem:${trade.id}`) : false;
   const labelMatch = searchHits ? searchHits.has(`lbl:${trade.id}`) : false;
+
+  // The front-page cell shows the first 5 lines of the remarks in bold
+  // white; recompute when the remarks modal closes (remarksVersion bumps),
+  // because the modal saves straight to storage and nothing else here
+  // changes — without it the memoised row would keep showing the old text.
+  const remarksPreview = useMemo(() => getRemarksPreview(trade.id), [trade.id, remarksVersion]);
 
   // Resolved label (localStorage > static)
   const labelStored = getWeekLabel(trade.id);
@@ -376,8 +382,8 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
         onClick={() => onOpenRemarks(trade)}
         title="Click to add or edit remarks"
       >
-        <div className="w-full font-body-md text-[calc(13px*var(--tz))] leading-snug text-primary font-bold line-clamp-4">
-          {getRemarksText(trade.id) || <span className="text-on-surface-variant/50 font-normal">Click to add remarks…</span>}
+        <div className="w-full font-body-md text-[calc(13px*var(--tz))] leading-snug text-primary font-bold line-clamp-5 whitespace-pre-line">
+          {remarksPreview || <span className="text-on-surface-variant/50 font-normal">Click to add remarks…</span>}
         </div>
         <button
           className="absolute top-[calc(6px*var(--tz))] right-[calc(6px*var(--tz))] opacity-0 group-hover/rem:opacity-60 hover:!opacity-100 transition-opacity text-on-surface-variant p-[calc(2px*var(--tz))] rounded bg-surface-container/50"
@@ -804,6 +810,10 @@ export default function WeeklyJournal() {
     }
   };
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
+  // Bumped when the remarks modal closes, so the memoised WeekRow
+  // re-reads the remarks it just saved (the modal writes to storage
+  // directly, and no other prop of the row changes on close).
+  const [remarksVersion, setRemarksVersion] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
   const [datasets, setDatasets] = useState(() => getDatasets());
@@ -1210,7 +1220,7 @@ export default function WeeklyJournal() {
     <>
       {/* ── Remarks modal ── */}
       {remarksModal && (
-        <RemarksModal trade={remarksModal} onClose={() => setRemarksModal(null)} />
+        <RemarksModal trade={remarksModal} onClose={() => { setRemarksModal(null); setRemarksVersion((v) => v + 1); }} />
       )}
 
       {/* ── Settings modal ── */}
@@ -1452,6 +1462,7 @@ export default function WeeklyJournal() {
                               search={search}
                               gridCols={gridTemplateColumns}
                               searchHits={searchHits}
+                              remarksVersion={remarksVersion}
                             />
                           )}
                         />

@@ -47,6 +47,36 @@ test.describe('Weekly Journal', () => {
     expect(style.color).toBe('rgb(255, 255, 255)');
   });
 
+  test('remarks typed in the modal show in the front-page cell: first 5 lines, bold white', async ({ page }) => {
+    await page.getByTestId('add-week-btn').click();
+    const cell = page.locator('[data-testid^="remarks-cell-"]').first();
+    await expect(cell).toBeVisible();
+    await cell.click();
+    await expect(page.locator('.remarks-modal-container')).toBeVisible();
+    const editor = page.locator('.remarks-modal-container .ql-editor');
+    await editor.click();
+    await page.keyboard.type('Line one of the remarks\nLine two here\nLine three here\nLine four here\nLine five here\nLine six here\nLine seven here');
+    await page.waitForTimeout(900); // let the save land
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.remarks-modal-container')).toHaveCount(0);
+    // The cell updates without a reload: first 5 lines only, bold white.
+    const text = await cell.innerText();
+    expect(text).toContain('Line one of the remarks');
+    expect(text).toContain('Line two here');
+    expect(text).toContain('Line three here');
+    expect(text).toContain('Line four here');
+    expect(text).toContain('Line five here');
+    expect(text).not.toContain('Line six');
+    expect(text).not.toContain('Line seven');
+    const textDiv = cell.locator('div').first();
+    const style = await textDiv.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { weight: cs.fontWeight, color: cs.color };
+    });
+    expect(style.weight).toBe('700');
+    expect(style.color).toBe('rgb(255, 255, 255)');
+  });
+
   test('should allow adding a new custom week row', async ({ page }) => {
     // Count initial rows (just counting how many week rows there are)
     // The initial rows are rendered from localStorage/default state.

@@ -702,6 +702,29 @@ export const getRemarksText = (weekId, fallback = '') => {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 };
 
+/** First N non-empty lines of the remarks, for the front-page cell.
+    Quill stores one <p> per line, so block ends and <br> are the line
+    breaks; the rest of the markup is stripped. Blank lines don't count. */
+export const getRemarksPreview = (weekId, fallback = '', maxLines = 5) => {
+  const html = getRemarks(weekId) ?? fallback;
+  if (!html) return '';
+  const lines = html
+    .replace(/<(p|div|li|h[1-6]|blockquote)[^>]*>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|blockquote)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, maxLines);
+  return lines.join('\n');
+};
+
 /* ─── Week label overrides ─── */
 export const getWeekLabel = (weekId) => {
   const obj = memCache.get(wlblKey(weekId));
