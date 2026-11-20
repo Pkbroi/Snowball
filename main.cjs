@@ -30,6 +30,15 @@ function createWindow() {
     autoHideMenuBar: true,
   });
 
+  // No title text in the title bar: the window keeps its min/max/close
+  // buttons, but the left side of the title bar stays empty. The page
+  // title ("Snowball — Trading Journal") would otherwise overwrite the
+  // empty title on load, so block that update.
+  mainWindow.setTitle('');
+  mainWindow.webContents.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+
   // Prevent display sleep while journal is open
   const blocker = powerSaveBlocker.start('prevent-display-sleep');
   mainWindow.on('closed', () => {

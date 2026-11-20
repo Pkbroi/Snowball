@@ -83,6 +83,13 @@ test.describe('Weekly Journal', () => {
     expect(Math.round(box.height)).toBe(37);
   });
 
+  test('app header is slim: 48px tall at 100% zoom', async ({ page }) => {
+    const header = page.locator('header').first();
+    await expect(header).toBeVisible();
+    const box = await header.boundingBox();
+    expect(Math.round(box.height)).toBe(48);
+  });
+
   test('should allow adding a new custom week row', async ({ page }) => {
     // Count initial rows (just counting how many week rows there are)
     // The initial rows are rendered from localStorage/default state.

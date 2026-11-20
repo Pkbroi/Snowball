@@ -1234,7 +1234,7 @@ export default function WeeklyJournal() {
         <main className="flex-1 flex flex-col h-full bg-black relative overflow-hidden">
 
           {/* Top App Bar */}
-          <header className="bg-[#212121] border-b border-[#424242] flex items-center w-full px-md md:px-lg h-16 shrink-0 z-30 gap-4">
+          <header className="bg-[#212121] border-b border-[#424242] flex items-center w-full px-md md:px-lg h-12 shrink-0 z-30 gap-4">
             {/* Left: title + search */}
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <span className="font-headline-lg text-headline-lg font-bold text-primary shrink-0">Snowball</span>
