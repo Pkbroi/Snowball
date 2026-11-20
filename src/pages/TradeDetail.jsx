@@ -431,6 +431,8 @@ export default function TradeDetail() {
   const [annotations, setAnnotationsState] = useState(() => getAnnotations(weekId, dayName));
   const [annTool, setAnnTool] = useState('select');
   const [selectedAnnId, setSelectedAnnId] = useState(null);
+  // Mark showing its right-click delete (×) button, if any.
+  const [annMenuId, setAnnMenuId] = useState(null);
   const [focusAnnId, setFocusAnnId] = useState(null);
   const [clearArmed, setClearArmed] = useState(false);
   const [picRect, setPicRect] = useState(null);
@@ -497,19 +499,27 @@ export default function TradeDetail() {
       persistAnnotations([...annotations, { id: nid, type: 'comment', x: Math.min(p.x, 86), y: Math.min(p.y, 86), text: '' }]);
       setSelectedAnnId(nid);
       setFocusAnnId(nid);
-      setAnnTool('select'); // typing starts — disarm so later clicks don't drop more boxes
     } else {
       persistAnnotations([...annotations, { id: nid, type: annTool, x: p.x, y: p.y }]);
     }
+    // One-shot tools: placing once deselects, so the next click does
+    // nothing until the tool is picked again (comment already disarmed
+    // here too, so the cursor can go straight into typing).
+    setAnnTool('select');
     setClearArmed(false);
   }, [annTool, annotations, persistAnnotations, pointToPct]);
 
+  const deleteAnn = useCallback((id) => {
+    persistAnnotations(annotations.filter((a) => a.id !== id));
+    if (selectedAnnId === id) setSelectedAnnId(null);
+    setAnnMenuId(null);
+  }, [annotations, persistAnnotations, selectedAnnId]);
+
   const deleteSelectedAnn = useCallback(() => {
     if (!selectedAnnId) return false;
-    persistAnnotations(annotations.filter((a) => a.id !== selectedAnnId));
-    setSelectedAnnId(null);
+    deleteAnn(selectedAnnId);
     return true;
-  }, [annotations, persistAnnotations, selectedAnnId]);
+  }, [selectedAnnId, deleteAnn]);
 
   // Actions the document-level Escape/Delete handler calls through.
   useEffect(() => {
@@ -518,19 +528,21 @@ export default function TradeDetail() {
         if (annTool === 'select' && !selectedAnnId) return false;
         setAnnTool('select');
         setSelectedAnnId(null);
+        setAnnMenuId(null);
         setClearArmed(false);
         return true;
       },
       deleteSelected: () => { deleteSelectedAnn(); },
-      reset: () => { setAnnTool('select'); setSelectedAnnId(null); setClearArmed(false); },
+      reset: () => { setAnnTool('select'); setSelectedAnnId(null); setAnnMenuId(null); setClearArmed(false); },
     };
   }, [annTool, selectedAnnId, deleteSelectedAnn]);
 
   // Drag a mark in select mode (lines move vertically only).
   const onAnnPointerDown = (e, ann) => {
-    if (annTool !== 'select') return;
+    if (annTool !== 'select' || e.button !== 0) return;
     e.stopPropagation();
     setSelectedAnnId(ann.id);
+    setAnnMenuId(null);
     setClearArmed(false);
     annDragRef.current = {
       id: ann.id, pointerId: e.pointerId,
@@ -565,6 +577,40 @@ export default function TradeDetail() {
     persistAnnotations(annotations.map((a) => (a.id === id ? { ...a, text } : a)));
   }, [annotations, persistAnnotations]);
 
+  // Grow a comment box to fit its text (up to 200px, then it scrolls).
+  const autoGrowComment = (el) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  };
+
+  // Right-click a mark: select it and show its delete (×) button at its
+  // top-right corner. The button is the only thing that shows it — a
+  // plain left-click select does not.
+  const onAnnContextMenu = (e, ann) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedAnnId(ann.id);
+    setAnnMenuId(ann.id);
+  };
+
+  // The × button a right-clicked mark shows at its top-right corner.
+  // Black with a white ring so it reads on light and dark charts alike.
+  const annDeleteBtn = (ann, positionClass) => (
+    annMenuId === ann.id ? (
+      <button
+        data-testid="ann-mark-delete"
+        aria-label="Delete this mark"
+        title="Delete this mark"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); deleteAnn(ann.id); }}
+        className={`absolute z-10 flex h-5 w-5 items-center justify-center rounded-full bg-black text-white ring-1 ring-white shadow-md ${positionClass}`}
+      >
+        <span className="material-symbols-outlined text-[14px] leading-none">close</span>
+      </button>
+    ) : null
+  );
+
   // One toolbar button: icon only, no text. Active tool inverts to white.
   const annToolBtn = (tool, label, content) => (
     <button
@@ -577,6 +623,7 @@ export default function TradeDetail() {
         ev.stopPropagation();
         setAnnTool(annTool === tool ? 'select' : tool);
         setSelectedAnnId(null);
+        setAnnMenuId(null);
         setClearArmed(false);
       }}
       className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${annTool === tool ? 'bg-white text-black' : 'text-on-surface hover:bg-surface-bright'}`}
@@ -592,6 +639,7 @@ export default function TradeDetail() {
       setAnnotationsState(getAnnotations(weekId, dayName));
       setAnnTool('select');
       setSelectedAnnId(null);
+      setAnnMenuId(null);
 
       const savedTradeDate = getTradeDate(weekId, dayName);
       setTradeDateState(savedTradeDate);
@@ -852,7 +900,7 @@ export default function TradeDetail() {
               <button data-testid="ann-delete" title="Delete selected mark" aria-label="Delete selected mark" disabled={!selectedAnnId} onClick={(e) => { e.stopPropagation(); deleteSelectedAnn(); }} className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright disabled:opacity-30 transition-colors">
                 <span className="material-symbols-outlined text-[20px]">delete</span>
               </button>
-              <button data-testid="ann-clear" title={clearArmed ? 'Tap again to clear all marks' : 'Clear all marks'} aria-label="Clear all marks" disabled={annotations.length === 0} onClick={(e) => { e.stopPropagation(); if (clearArmed) { persistAnnotations([]); setSelectedAnnId(null); setClearArmed(false); } else { setClearArmed(true); setTimeout(() => setClearArmed(false), 3000); } }} className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${clearArmed ? 'bg-red-500/20 text-red-400' : 'text-on-surface hover:bg-surface-bright'}`}>
+              <button data-testid="ann-clear" title={clearArmed ? 'Tap again to clear all marks' : 'Clear all marks'} aria-label="Clear all marks" disabled={annotations.length === 0} onClick={(e) => { e.stopPropagation(); if (clearArmed) { persistAnnotations([]); setSelectedAnnId(null); setAnnMenuId(null); setClearArmed(false); } else { setClearArmed(true); setTimeout(() => setClearArmed(false), 3000); } }} className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${clearArmed ? 'bg-red-500/20 text-red-400' : 'text-on-surface hover:bg-surface-bright'}`}>
                 <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
               </button>
             </div>
@@ -885,7 +933,7 @@ export default function TradeDetail() {
               className="absolute z-40"
               style={{ left: picRect.left, top: picRect.top, width: picRect.width, height: picRect.height }}
               onPointerDown={(e) => {
-                if (annTool !== 'select') {
+                if (annTool !== 'select' && e.button === 0) {
                   // preventDefault stops the compatibility mousedown whose
                   // default action would blur the comment box React just
                   // focused during this same pointerdown.
@@ -894,9 +942,16 @@ export default function TradeDetail() {
                   placeAnnotation(e);
                 }
                 // Select mode: let the event bubble to the container (pan / backdrop close).
+                // A right-click never places — it is for the mark menu instead.
               }}
               onClick={(e) => {
-                if (annTool === 'select' && e.target === e.currentTarget && !lbDragged.current && Date.now() - justPlacedRef.current > 300) setExpanded(false);
+                if (annTool !== 'select' || e.target !== e.currentTarget || lbDragged.current || Date.now() - justPlacedRef.current <= 300) return;
+                // An empty click dismisses the right-click delete button,
+                // and closes the lightbox only while no mark is on the
+                // chart yet — once a mark is there, it does nothing
+                // (close with the × button or Escape instead).
+                setAnnMenuId(null);
+                if (annotations.length === 0) setExpanded(false);
               }}
             >
               {annotations.map((a) => {
@@ -907,6 +962,7 @@ export default function TradeDetail() {
                       className="absolute left-0 right-0 cursor-move touch-none"
                       style={{ top: `${a.y}%`, height: 12, transform: 'translateY(-50%)' }}
                       onPointerDown={(e) => { if (annTool === 'select') onAnnPointerDown(e, a); }}
+                      onContextMenu={(e) => onAnnContextMenu(e, a)}
                       onPointerMove={onAnnPointerMove}
                       onPointerUp={onAnnPointerUp}
                     >
@@ -917,6 +973,7 @@ export default function TradeDetail() {
                           <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-2.5 h-2.5 bg-amber-400 rounded-sm" />
                         </>
                       )}
+                      {annDeleteBtn(a, 'right-2 -top-3')}
                     </div>
                   );
                 }
@@ -929,6 +986,7 @@ export default function TradeDetail() {
                         e.stopPropagation();
                         if (annTool === 'select' && !e.target.closest('textarea')) onAnnPointerDown(e, a);
                       }}
+                      onContextMenu={(e) => onAnnContextMenu(e, a)}
                       onPointerMove={onAnnPointerMove}
                       onPointerUp={onAnnPointerUp}
                     >
@@ -937,13 +995,14 @@ export default function TradeDetail() {
                         value={a.text ?? ''}
                         rows={2}
                         placeholder="Type a comment…"
-                        ref={(el) => { if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
-                        onChange={(e) => updateAnnText(a.id, e.target.value)}
+                        ref={(el) => { autoGrowComment(el); if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
+                        onChange={(e) => { updateAnnText(a.id, e.target.value); autoGrowComment(e.target); }}
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
-                        className="w-full min-h-[48px] resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold"
+                        className="w-full min-h-[48px] max-h-[200px] overflow-y-auto resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold"
                       />
+                      {annDeleteBtn(a, '-right-2 -top-2')}
                     </div>
                   );
                 }
@@ -955,10 +1014,12 @@ export default function TradeDetail() {
                     className={`absolute cursor-move touch-none ${selected ? 'outline outline-2 outline-white rounded-sm' : ''}`}
                     style={{ left: `${a.x}%`, top: `${a.y}%`, transform: isUp ? 'translate(-50%, 0)' : 'translate(-50%, -100%)', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))' }}
                     onPointerDown={(e) => { if (annTool === 'select') onAnnPointerDown(e, a); }}
+                    onContextMenu={(e) => onAnnContextMenu(e, a)}
                     onPointerMove={onAnnPointerMove}
                     onPointerUp={onAnnPointerUp}
                   >
                     <AnnArrow color={style.color} dir={style.dir} size={26} />
+                    {annDeleteBtn(a, 'right-0 top-0 translate-x-1/2 -translate-y-1/2')}
                   </div>
                 );
               })}

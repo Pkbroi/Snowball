@@ -106,9 +106,12 @@ test.describe('Chart annotations (v4.5)', () => {
     await page.getByTestId('ann-comment-text').fill('held the level');
     await page.keyboard.press('Escape'); // leave the comment box
     await page.waitForTimeout(500); // past the placement-click guard
-    // Click empty chart to close the lightbox, go back, and reopen the same cell.
-    await page.mouse.click(box.x + box.width * 0.1, box.y + box.height * 0.9);
+    // Close the lightbox with Escape (blur, deselect, close) — an empty
+    // chart click no longer closes once a mark is on the chart.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
     await expect(page.getByTestId('chart-lightbox')).toHaveCount(0);
+    // Go back, and reopen the same cell.
     await page.getByTestId('back-button').click();
     await expect(page).toHaveURL(/\/(\?|$)/);
     await page.locator('[data-testid^="day-cell-"]').first().dblclick();
@@ -130,8 +133,7 @@ test.describe('Chart annotations (v4.5)', () => {
     await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.5);
     const mark = page.locator('[data-testid="ann-mark"][data-ann-type="arrow-red-down"]');
     await expect(mark).toHaveCount(1);
-    // Back to select: click the armed tool again, then click the mark.
-    await page.getByTestId('ann-tool-arrow-red-down').click();
+    // One-shot: placing already disarmed the tool, so click the mark directly.
     await mark.click();
     await page.keyboard.press('Delete');
     await expect(mark).toHaveCount(0);
@@ -148,8 +150,7 @@ test.describe('Chart annotations (v4.5)', () => {
     const before = await mark.evaluate((el) => parseFloat(el.style.left));
     expect(before).toBeCloseTo(30, 0);
 
-    // Back to select, then drag the mark right by 120px.
-    await page.getByTestId('ann-tool-arrow-green-up').click();
+    // One-shot: placing already disarmed the tool, so drag the mark directly.
     const mbox = await mark.boundingBox();
     await page.mouse.move(mbox.x + mbox.width / 2, mbox.y + mbox.height / 2);
     await page.mouse.down();
@@ -174,11 +175,116 @@ test.describe('Chart annotations (v4.5)', () => {
     };
     const before = await relPos();
     expect(before.x).toBeCloseTo(0.6, 1);
-    await page.getByTestId('ann-tool-arrow-yellow').click(); // disarm so the zoom click doesn't place
+    // One-shot: placing already disarmed the tool, so zooming can't place.
     await page.getByTestId('lightbox-zoom-in').click();
     await page.waitForTimeout(300);
     const after = await relPos();
     expect(after.x).toBeCloseTo(before.x, 1);
     expect(after.y).toBeCloseTo(before.y, 1);
+  });
+
+  test('tools are one-shot: a second click without re-arming places nothing', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    // Arrow: place once, click again elsewhere right away — no second arrow,
+    // and the tool is back to select.
+    await page.getByTestId('ann-tool-arrow-green-up').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+    await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.4);
+    await expect(page.locator('[data-testid="ann-mark"][data-ann-type="arrow-green-up"]')).toHaveCount(1);
+    await expect(page.getByTestId('ann-tool-arrow-green-up')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(1);
+    // Line: same — one line, second click places nothing.
+    await page.getByTestId('ann-tool-line').click();
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.8);
+    await expect(page.locator('[data-testid="ann-mark"][data-ann-type="line"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(2);
+    // Re-arming works: pick the tool again and it places once more.
+    await page.getByTestId('ann-tool-arrow-green-up').click();
+    await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.4);
+    await expect(page.locator('[data-testid="ann-mark"][data-ann-type="arrow-green-up"]')).toHaveCount(2);
+  });
+
+  test('comment box grows taller as the comment fills it', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    await page.getByTestId('ann-tool-comment').click();
+    const box = await overlay.boundingBox();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    const startHeight = await textarea.evaluate((el) => el.offsetHeight);
+    const longText = ['first line', 'second line', 'third line', 'fourth line', 'fifth line', 'sixth line'].join('\n');
+    await textarea.fill(longText);
+    await expect(textarea).toHaveValue(longText);
+    const grown = await textarea.evaluate((el) => ({ h: el.offsetHeight, scroll: el.scrollHeight }));
+    expect(grown.h).toBeGreaterThan(startHeight + 40);
+    // The whole comment is visible — no internal scrolling needed.
+    expect(grown.scroll).toBeLessThanOrEqual(grown.h + 1);
+  });
+
+  test('empty chart click does nothing once a mark is on the chart', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    // No marks yet: an empty click still closes the lightbox.
+    await page.mouse.click(box.x + box.width * 0.8, box.y + box.height * 0.8);
+    await expect(overlay).toBeHidden();
+    // Reopen and place a mark.
+    await page.getByTestId('chart-image-container').dblclick();
+    await expect(page.getByTestId('ann-overlay')).toBeVisible({ timeout: 15000 });
+    const box2 = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-arrow-green-up').click();
+    await page.mouse.click(box2.x + box2.width * 0.3, box2.y + box2.height * 0.4);
+    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(1);
+    // Wait past the 300ms placement guard, then click empty chart — nothing happens.
+    await page.waitForTimeout(500);
+    await page.mouse.click(box2.x + box2.width * 0.8, box2.y + box2.height * 0.8);
+    await expect(page.getByTestId('ann-overlay')).toBeVisible();
+    // Escape still closes.
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('ann-overlay')).toBeHidden();
+  });
+
+  test('right-click a mark selects it and shows a delete button', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    // Arrow: left-clicking it selects it but shows no delete button;
+    // right-clicking it does. (Right-click at the mark's centre, not the
+    // placement point — an up arrow's tip sits exactly on that point.)
+    await page.getByTestId('ann-tool-arrow-green-up').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+    const arrow = page.locator('[data-testid="ann-mark"][data-ann-type="arrow-green-up"]');
+    await expect(arrow).toHaveCount(1);
+    const arrowBox = await arrow.boundingBox();
+    await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2);
+    await expect(page.getByTestId('ann-mark-delete')).toHaveCount(0);
+    await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-mark-delete')).toHaveCount(1);
+    await page.getByTestId('ann-mark-delete').click();
+    await expect(arrow).toHaveCount(0);
+    // Line: right-click near its right end, then delete.
+    await page.getByTestId('ann-tool-line').click();
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
+    const line = page.locator('[data-testid="ann-mark"][data-ann-type="line"]');
+    await expect(line).toHaveCount(1);
+    const lineBox = await line.boundingBox();
+    await page.mouse.click(lineBox.x + lineBox.width * 0.95, lineBox.y + lineBox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-mark-delete')).toHaveCount(1);
+    await page.getByTestId('ann-mark-delete').click();
+    await expect(line).toHaveCount(0);
+    // Comment: right-click the box, then delete.
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    await expect(comment).toHaveCount(1);
+    const commentBox = await comment.boundingBox();
+    await page.mouse.click(commentBox.x + commentBox.width / 2, commentBox.y + commentBox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-mark-delete')).toHaveCount(1);
+    await page.getByTestId('ann-mark-delete').click();
+    await expect(comment).toHaveCount(0);
   });
 });
