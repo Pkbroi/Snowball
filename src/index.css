@@ -107,6 +107,9 @@ img { -webkit-user-drag: none; user-drag: none; }
   min-height: 300px;
   outline: none !important;
   border: none !important;
+  /* Notes are always bold — typed text is bold by default, no need to
+     select it and press Ctrl+B first. */
+  font-weight: 700;
 }
 .ql-editor.ql-blank::before {
   left: 0 !important;

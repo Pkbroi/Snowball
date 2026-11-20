@@ -287,4 +287,34 @@ test.describe('Chart annotations (v4.5)', () => {
     await page.getByTestId('ann-mark-delete').click();
     await expect(comment).toHaveCount(0);
   });
+
+  test('marks and comments show on the inline chart on the detail page', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-arrow-green-up').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+    await page.getByTestId('ann-tool-line').click();
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.3);
+    await page.getByTestId('ann-comment-text').fill('held the level');
+    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(3);
+    // Close the lightbox (Escape: blur, deselect, close).
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('chart-lightbox')).toHaveCount(0);
+    // The same marks are visible on the inline chart, in the right places.
+    const inline = page.getByTestId('inline-ann-overlay');
+    await expect(inline).toBeVisible();
+    await expect(page.locator('[data-testid="inline-ann-mark"]')).toHaveCount(3);
+    await expect(page.locator('[data-testid="inline-ann-mark"][data-ann-type="comment"]')).toHaveText('held the level');
+    const chart = await page.getByTestId('chart-image-container').boundingBox();
+    const arrowBox = await page.locator('[data-testid="inline-ann-mark"][data-ann-type="arrow-green-up"]').boundingBox();
+    expect((arrowBox.x + arrowBox.width / 2 - chart.x) / chart.width).toBeCloseTo(0.3, 1);
+    expect((arrowBox.y - chart.y) / chart.height).toBeCloseTo(0.4, 1);
+    const lineBox = await page.locator('[data-testid="inline-ann-mark"][data-ann-type="line"]').boundingBox();
+    expect((lineBox.y + lineBox.height / 2 - chart.y) / chart.height).toBeCloseTo(0.6, 1);
+  });
 });

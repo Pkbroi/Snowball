@@ -36,6 +36,22 @@ test.describe('Trade Detail Page', () => {
     await expect(saveIndicator).toBeVisible();
   });
 
+  test('notes text is bold by default, with nothing selected', async ({ page }) => {
+    const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();
+    await firstDayCell.dblclick();
+
+    const editor = page.getByTestId('notes-editor');
+    await editor.fill('Bold without selecting anything');
+    await expect(editor).toContainText('Bold without selecting anything');
+    // The editor itself and the typed paragraph both render bold (700).
+    const weights = await editor.evaluate((el) => ({
+      editor: getComputedStyle(el).fontWeight,
+      paragraph: getComputedStyle(el.querySelector('p')).fontWeight,
+    }));
+    expect(weights.editor).toBe('700');
+    expect(weights.paragraph).toBe('700');
+  });
+
   test('should navigate back to journal when back button is clicked', async ({ page }) => {
     // Navigate to trade detail
     const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();

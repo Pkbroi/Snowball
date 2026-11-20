@@ -3,15 +3,23 @@ import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
 import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations } from '../data/storage.js';
-import ReactQuill from 'react-quill-new';
+import ReactQuill, { Quill } from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
 
 
 /* ─── Image Resize Handler ─────────────────────────────────────────────────
    Attaches MS-Word–style resize handles to images inside the Quill editor.
-   Click an image → 8 handles appear; drag to resize. No external deps.
-─────────────────────────────────────────────────────────────────────────── */
+   Right-click (or click) an image → it is selected: a dotted outline with
+   8 handles appears, plus a × button at the top-right corner that deletes
+   the picture. Drag a handle to change the picture's width / height.
+   No external deps.
+
+   The overlay lives on the editor's CONTAINER (.ql-container), not inside
+   the editor root (.ql-editor): Quill's own DOM reconciliation removes
+   foreign nodes from the root, so an overlay appended there vanishes a
+   moment after it appears. The container is outside Quill's blot tree
+   and is position:relative, so the overlay stays put. ─────────────────── */
 function ImageResizeHandler({ quillRef }) {
   useEffect(() => {
     let cleanup = () => {};
@@ -20,15 +28,24 @@ function ImageResizeHandler({ quillRef }) {
     let attempts = 0;
     const tryAttach = () => {
       attempts++;
-      const editorRoot = quillRef.current?.getEditor?.()?.root;
+      const quill = quillRef.current?.getEditor?.();
+      const editorRoot = quill?.root;
       if (!editorRoot) {
         if (attempts < 20) setTimeout(tryAttach, 100);
         return;
       }
+    // The overlay's parent: the editor container, outside Quill's blot tree.
+    const container = editorRoot.parentNode;
     let overlay = null;
     let activeImg = null;
     let startX = 0, startY = 0, startW = 0, startH = 0;
     let currentHandle = null;
+    let dragged = false;
+    // Set on mouseup after a drag: the click that follows a drag lands on
+    // the nearest common ancestor of the handle and the release point
+    // (the container), which the document click handler would read as
+    // "clicked outside" and use to dismiss the overlay. Skip that once.
+    let justDragged = false;
 
     const HANDLE_SIZE = 10;
 
@@ -38,8 +55,9 @@ function ImageResizeHandler({ quillRef }) {
       activeImg = null;
     };
 
-    const makeHandle = (cursor) => {
+    const makeHandle = (cursor, key) => {
       const h = document.createElement('div');
+      h.dataset.handle = key;
       h.style.cssText = `
         position:absolute; width:${HANDLE_SIZE}px; height:${HANDLE_SIZE}px;
         background:#ececec; border:1.5px solid #fff; border-radius:2px;
@@ -50,15 +68,30 @@ function ImageResizeHandler({ quillRef }) {
     };
 
     const positionOverlay = (img) => {
+      if (!overlay || !img) return;
       const rect = img.getBoundingClientRect();
-      const editorRect = editorRoot.getBoundingClientRect();
-      const scrollTop = editorRoot.scrollTop;
-      const scrollLeft = editorRoot.scrollLeft;
-
-      overlay.style.left   = `${rect.left - editorRect.left + scrollLeft}px`;
-      overlay.style.top    = `${rect.top  - editorRect.top  + scrollTop}px`;
+      const contRect = container.getBoundingClientRect();
+      // Both rects are viewport-relative, so no scroll offsets are needed —
+      // but the picture moves when the page scrolls, so re-position on scroll.
+      overlay.style.left   = `${rect.left - contRect.left}px`;
+      overlay.style.top    = `${rect.top  - contRect.top}px`;
       overlay.style.width  = `${rect.width}px`;
       overlay.style.height = `${rect.height}px`;
+    };
+
+    const reposition = () => { if (overlay && activeImg) positionOverlay(activeImg); };
+
+    // Delete the selected picture through Quill, so the change is saved
+    // like any other edit (autosave picks it up).
+    const deleteActiveImg = () => {
+      if (!activeImg) return;
+      const blot = Quill.find(activeImg);
+      if (quill && blot) {
+        quill.deleteText(quill.getIndex(blot), 1);
+      } else {
+        activeImg.remove();
+      }
+      removeOverlay();
     };
 
     const attachOverlay = (img) => {
@@ -66,26 +99,27 @@ function ImageResizeHandler({ quillRef }) {
       activeImg = img;
 
       overlay = document.createElement('div');
+      overlay.dataset.testid = 'notes-img-overlay';
       overlay.style.cssText = `
         position:absolute; box-sizing:border-box;
-        border:2px solid #ececec; pointer-events:none;
+        border:2px dotted #ececec; pointer-events:none;
         z-index:9998;
       `;
 
       // 8 handles: corners + edge midpoints
       const handles = [
-        { cursor:'nw-resize',  tx:0,    ty:0    },
-        { cursor:'n-resize',   tx:0.5,  ty:0    },
-        { cursor:'ne-resize',  tx:1,    ty:0    },
-        { cursor:'e-resize',   tx:1,    ty:0.5  },
-        { cursor:'se-resize',  tx:1,    ty:1    },
-        { cursor:'s-resize',   tx:0.5,  ty:1    },
-        { cursor:'sw-resize',  tx:0,    ty:1    },
-        { cursor:'w-resize',   tx:0,    ty:0.5  },
+        { key:'nw', cursor:'nw-resize',  tx:0,    ty:0    },
+        { key:'n',  cursor:'n-resize',   tx:0.5,  ty:0    },
+        { key:'ne', cursor:'ne-resize',  tx:1,    ty:0    },
+        { key:'e',  cursor:'e-resize',   tx:1,    ty:0.5  },
+        { key:'se', cursor:'se-resize',  tx:1,    ty:1    },
+        { key:'s',  cursor:'s-resize',   tx:0.5,  ty:1    },
+        { key:'sw', cursor:'sw-resize',  tx:0,    ty:1    },
+        { key:'w',  cursor:'w-resize',   tx:0,    ty:0.5  },
       ];
 
-      handles.forEach(({ cursor, tx, ty }) => {
-        const h = makeHandle(cursor);
+      handles.forEach(({ key, cursor, tx, ty }) => {
+        const h = makeHandle(cursor, key);
         h.style.pointerEvents = 'all';
         h.style.left = `${tx * 100}%`;
         h.style.top  = `${ty * 100}%`;
@@ -96,6 +130,7 @@ function ImageResizeHandler({ quillRef }) {
           e.preventDefault();
           e.stopPropagation();
           currentHandle = { tx: parseFloat(h.dataset.tx), ty: parseFloat(h.dataset.ty) };
+          dragged = false;
           startX = e.clientX;
           startY = e.clientY;
           startW = activeImg.offsetWidth  || activeImg.naturalWidth  || 200;
@@ -105,20 +140,36 @@ function ImageResizeHandler({ quillRef }) {
         overlay.appendChild(h);
       });
 
+      // × button at the top-right corner — deletes the picture.
+      const delBtn = document.createElement('button');
+      delBtn.dataset.testid = 'notes-img-delete';
+      delBtn.title = 'Delete this picture';
+      delBtn.setAttribute('aria-label', 'Delete this picture');
+      delBtn.style.cssText = `
+        position:absolute; top:0; right:0; transform:translate(50%,-50%);
+        width:20px; height:20px; border-radius:9999px;
+        background:#000; color:#fff; border:1px solid #fff;
+        display:flex; align-items:center; justify-content:center;
+        cursor:pointer; pointer-events:all; z-index:10000;
+        box-shadow:0 1px 4px rgba(0,0,0,.6); padding:0;
+      `;
+      delBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:14px;line-height:1">close</span>';
+      delBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+      delBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); deleteActiveImg(); });
+      overlay.appendChild(delBtn);
+
       // Size label
       const label = document.createElement('div');
       label.className = '_qir_label';
       label.style.cssText = `
-        position:absolute; bottom:-22px; left:0; background:#ececec; color:#fff;
+        position:absolute; bottom:-22px; left:0; background:#000; color:#fff;
         font-size:10px; padding:1px 5px; border-radius:3px; white-space:nowrap;
         pointer-events:none; z-index:9999;
       `;
       overlay.appendChild(label);
       overlay._label = label;
 
-      const editorRoot2 = editorRoot;
-      editorRoot2.style.position = 'relative';
-      editorRoot2.appendChild(overlay);
+      container.appendChild(overlay);
 
       positionOverlay(img);
       overlay._label.textContent = `${Math.round(img.offsetWidth)} × ${Math.round(img.offsetHeight)}`;
@@ -128,19 +179,34 @@ function ImageResizeHandler({ quillRef }) {
       if (!currentHandle || !activeImg) return;
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
-
-      let newW = startW;
-      let newH = startH;
+      if (Math.abs(dx) + Math.abs(dy) > 2) dragged = true;
 
       const { tx, ty } = currentHandle;
 
-      if (tx === 1)   newW = Math.max(20, startW + dx);
-      if (tx === 0)   newW = Math.max(20, startW - dx);
-      if (ty === 1)   newH = Math.max(20, startH + dy);
-      if (ty === 0)   newH = Math.max(20, startH - dy);
-      // corners: both axes
-      if (tx === 0.5) newW = startW;
-      if (ty === 0.5) newH = startH;
+      // Keep the picture's proportions while resizing: the size is saved
+      // through Quill as width/height attributes, and the app's stylesheet
+      // renders pictures at their natural aspect ratio for a given width
+      // (height:auto), so a stretched picture would snap back to its
+      // proportions on reload. Locking the ratio makes the drag and the
+      // saved size agree exactly.
+      const ratio = startW / startH;
+      let newW = startW;
+      let newH = startH;
+      if (tx === 1) newW = startW + dx;
+      if (tx === 0) newW = startW - dx;
+      if (ty === 1) newH = startH + dy;
+      if (ty === 0) newH = startH - dy;
+      if (tx === 0.5) {
+        // Top / bottom edge: height leads, width follows.
+        newH = Math.max(20, newH);
+        newW = newH * ratio;
+        if (newW < 20) { newW = 20; newH = newW / ratio; }
+      } else {
+        // Corners and left / right edges: width leads, height follows.
+        newW = Math.max(20, newW);
+        newH = newW / ratio;
+        if (newH < 20) { newH = 20; newW = newH * ratio; }
+      }
 
       activeImg.style.width  = `${newW}px`;
       activeImg.style.height = `${newH}px`;
@@ -152,7 +218,31 @@ function ImageResizeHandler({ quillRef }) {
     };
 
     const onMouseUp = () => {
+      if (currentHandle && dragged && activeImg) {
+        justDragged = true;
+        // Persist the new size through Quill: a width/height set directly
+        // on the img's style is not part of Quill's Delta, so it is lost
+        // on reload — but the image blot stores width/height as attributes,
+        // which Quill saves with the notes. Apply both, then re-point at
+        // the live node in case the editor rebuilt it.
+        try {
+          const blot = Quill.find(activeImg);
+          if (quill && blot) {
+            const index = quill.getIndex(blot);
+            const w = `${Math.round(activeImg.offsetWidth)}`;
+            const h = `${Math.round(activeImg.offsetHeight)}`;
+            quill.formatText(index, 1, 'width', w);
+            quill.formatText(index, 1, 'height', h);
+            const leaf = quill.getLeaf(index);
+            if (leaf && leaf[0] && leaf[0].domNode) {
+              activeImg = leaf[0].domNode;
+              positionOverlay(activeImg);
+            }
+          }
+        } catch { /* keep the drag's live size; saving stays best-effort */ }
+      }
       currentHandle = null;
+      dragged = false;
     };
 
     const onImgClick = (e) => {
@@ -162,19 +252,38 @@ function ImageResizeHandler({ quillRef }) {
       attachOverlay(img);
     };
 
+    // Right-click a picture: select it (same overlay) without the
+    // browser's own context menu.
+    const onImgContextMenu = (e) => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG') return;
+      e.preventDefault();
+      e.stopPropagation();
+      attachOverlay(img);
+    };
+
     const onDocClick = (e) => {
+      if (justDragged) { justDragged = false; return; }
       if (overlay && !overlay.contains(e.target) && e.target !== activeImg) {
         removeOverlay();
       }
     };
 
     editorRoot.addEventListener('click', onImgClick);
+    editorRoot.addEventListener('contextmenu', onImgContextMenu);
+    editorRoot.addEventListener('scroll', reposition);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('click', onDocClick);
 
     cleanup = () => {
       editorRoot.removeEventListener('click', onImgClick);
+      editorRoot.removeEventListener('contextmenu', onImgContextMenu);
+      editorRoot.removeEventListener('scroll', reposition);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('click', onDocClick);
@@ -478,6 +587,35 @@ export default function TradeDetail() {
     window.addEventListener('resize', update);
     return () => { ro?.disconnect(); window.removeEventListener('resize', update); };
   }, [expanded, computePicRect, lbZoom, lbPan, fullImg, mediumImg, chartImg]);
+
+  // Inline chart (notes page): the same marks, read-only, over the chart
+  // at the top of the detail page. The inline image is object-cover in a
+  // fixed-aspect box, so the overlay is sized to the displayed picture
+  // rect (cover math) — % coords then map exactly as in the lightbox.
+  const inlineContainerRef = useRef(null);
+  const inlineImgRef = useRef(null);
+  const [inlinePicRect, setInlinePicRect] = useState(null);
+
+  const computeInlinePicRect = useCallback(() => {
+    const img = inlineImgRef.current;
+    const cont = inlineContainerRef.current;
+    if (!img || !cont || !img.naturalWidth) return null;
+    const r = cont.getBoundingClientRect();
+    const scale = Math.max(r.width / img.naturalWidth, r.height / img.naturalHeight);
+    const w = img.naturalWidth * scale;
+    const h = img.naturalHeight * scale;
+    return { left: (r.width - w) / 2, top: (r.height - h) / 2, width: w, height: h };
+  }, []);
+
+  useEffect(() => {
+    const update = () => setInlinePicRect(computeInlinePicRect());
+    update();
+    const cont = inlineContainerRef.current;
+    const ro = cont ? new ResizeObserver(update) : null;
+    ro?.observe(cont);
+    window.addEventListener('resize', update);
+    return () => { ro?.disconnect(); window.removeEventListener('resize', update); };
+  }, [computeInlinePicRect, chartImg, mediumImg, fullImg]);
 
   const pointToPct = useCallback((clientX, clientY) => {
     const r = picRect;
@@ -1115,6 +1253,7 @@ export default function TradeDetail() {
           {chartImg ? (
             /* Image present: show with delete button, double-click expands */
             <div
+              ref={inlineContainerRef}
               className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-[1916/1000] bg-surface-container-lowest relative cursor-crosshair group"
               data-testid="chart-image-container"
               onDoubleClick={handleChartDoubleClick}
@@ -1134,13 +1273,61 @@ export default function TradeDetail() {
               <div ref={vLineInlineRef} className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-white/70 z-20 mix-blend-difference" style={{ left: '-10px' }} />
 
               <img
+                ref={inlineImgRef}
                 src={mediumImg || fullImg || chartImg}
                 alt={`${day.day} chart`}
                 decoding="async"
                 fetchPriority="high"
                 draggable={false}
+                onLoad={() => setInlinePicRect(computeInlinePicRect())}
                 className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${mediumLoaded || fullLoaded ? 'opacity-100' : 'opacity-70'}`}
               />
+              {/* Read-only marks over the inline chart — the same arrows,
+                  line and comments from the fullscreen chart, so they stay
+                  visible on the notes page. Not interactive: open the
+                  fullscreen chart to move, edit or delete a mark. */}
+              {chartImg && inlinePicRect && annotations.length > 0 && (
+                <div
+                  data-testid="inline-ann-overlay"
+                  className="absolute z-[5] pointer-events-none"
+                  style={{ left: inlinePicRect.left, top: inlinePicRect.top, width: inlinePicRect.width, height: inlinePicRect.height }}
+                >
+                  {annotations.map((a) => {
+                    if (a.type === 'line') {
+                      return (
+                        <div key={a.id} data-testid="inline-ann-mark" data-ann-type="line"
+                          className="absolute left-0 right-0"
+                          style={{ top: `${a.y}%`, height: 12, transform: 'translateY(-50%)' }}
+                        >
+                          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[2px] bg-black" style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.65)' }} />
+                        </div>
+                      );
+                    }
+                    if (a.type === 'comment') {
+                      if (!a.text || !a.text.trim()) return null;
+                      return (
+                        <div key={a.id} data-testid="inline-ann-mark" data-ann-type="comment"
+                          className="absolute rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white whitespace-pre-wrap break-words"
+                          style={{ left: `${a.x}%`, top: `${a.y}%`, width: 180 }}
+                        >
+                          {a.text}
+                        </div>
+                      );
+                    }
+                    const style = ANN_ARROW_STYLE[a.type];
+                    if (!style) return null;
+                    const isUp = style.dir === 'up';
+                    return (
+                      <div key={a.id} data-testid="inline-ann-mark" data-ann-type={a.type}
+                        className="absolute"
+                        style={{ left: `${a.x}%`, top: `${a.y}%`, transform: isUp ? 'translate(-50%, 0)' : 'translate(-50%, -100%)', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))' }}
+                      >
+                        <AnnArrow color={style.color} dir={style.dir} size={26} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <button
                 onDoubleClick={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); deleteChart(); }}
@@ -1220,7 +1407,7 @@ export default function TradeDetail() {
             theme="snow"
             value={notesContent}
             onChange={persistNotes}
-            placeholder="Type notes here… Use Ctrl+B for bold. Drag & drop or paste images anytime."
+            placeholder="Type notes here… Drag & drop or paste images anytime."
             className="flex-1 text-on-surface"
             modules={{ toolbar: false }}
           />
