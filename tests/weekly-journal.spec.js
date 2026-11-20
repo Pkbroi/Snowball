@@ -11,6 +11,42 @@ test.describe('Weekly Journal', () => {
     await expect(page.getByTestId('search-input')).toBeVisible();
   });
 
+  test('column headings are matte black with bold white text, week labels are bold', async ({ page }) => {
+    await page.getByTestId('add-week-btn').click();
+    const weekLabel = page.locator('[data-testid^="week-label-"]').first();
+    await expect(weekLabel).toBeVisible();
+    await weekLabel.locator('input').first().fill('Nov');
+    await weekLabel.locator('input').nth(1).fill('17 – 21');
+
+    // Headings row: pure black background, bold white text.
+    const headings = page.locator('text=WEEK').first();
+    const headerRow = headings.locator('xpath=ancestor::div[contains(@class, "grid")][1]');
+    const headerStyle = await headerRow.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, weight: cs.fontWeight, color: cs.color };
+    });
+    expect(headerStyle.bg).toBe('rgb(0, 0, 0)');
+    expect(headerStyle.weight).toBe('700');
+    expect(headerStyle.color).toBe('rgb(255, 255, 255)');
+    // Week label inputs: both lines bold.
+    const weights = await weekLabel.evaluate((el) => [...el.querySelectorAll('input')].map((i) => getComputedStyle(i).fontWeight));
+    expect(weights).toHaveLength(2);
+    expect(weights[0]).toBe('700');
+    expect(weights[1]).toBe('700');
+  });
+
+  test('search bar is matte black with bold white text, like the buttons', async ({ page }) => {
+    const input = page.getByTestId('search-input');
+    await input.fill('17');
+    const style = await input.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, weight: cs.fontWeight, color: cs.color };
+    });
+    expect(style.bg).toBe('rgb(0, 0, 0)');
+    expect(style.weight).toBe('700');
+    expect(style.color).toBe('rgb(255, 255, 255)');
+  });
+
   test('should allow adding a new custom week row', async ({ page }) => {
     // Count initial rows (just counting how many week rows there are)
     // The initial rows are rendered from localStorage/default state.

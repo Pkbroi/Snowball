@@ -323,7 +323,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
             }
           }}
           title="Click to edit"
-          className="font-label-md text-on-surface bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          className="font-label-md font-bold text-on-surface bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
           style={{ fontSize: 'calc(14px * var(--tz))', lineHeight: 'calc(20px * var(--tz))' }}
         />
         <input
@@ -350,7 +350,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
             }
           }}
           title="Click to edit"
-          className="font-label-md text-on-surface-variant opacity-70 bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
+          className="font-label-md font-bold text-on-surface-variant opacity-70 bg-transparent focus:outline-none focus:bg-surface-container hover:bg-surface-container/30 rounded px-[calc(4px*var(--tz))] py-[calc(2px*var(--tz))] w-full placeholder-on-surface-variant/50 border-0 ring-0 focus:ring-0"
           style={{ fontSize: 'calc(14px * var(--tz))', lineHeight: 'calc(20px * var(--tz))' }}
         />
       </div>
@@ -1229,20 +1229,20 @@ export default function WeeklyJournal() {
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <span className="font-headline-lg text-headline-lg font-bold text-primary shrink-0">Snowball</span>
 
-              {/* Inline search bar */}
+              {/* Inline search bar — matte black with bold white text, like the header buttons */}
               <div className="relative flex items-center w-full max-w-sm">
-                <span className="material-symbols-outlined absolute left-3 text-on-surface-variant text-[18px] pointer-events-none">search</span>
+                <span className="material-symbols-outlined absolute left-3 text-white text-[18px] pointer-events-none">search</span>
                 <input
                   type="text"
                   data-testid="search-input"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full bg-[#2f2f2f] rounded-full border border-[#424242] py-1.5 pl-9 pr-8 text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
+                  className="w-full bg-black rounded-full border border-black py-1.5 pl-9 pr-8 text-white font-bold placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
                   placeholder="Search remarks, notes, dates…"
                 />
                 {search && (
                   <button onClick={() => setSearch('')}
-                    className="absolute right-2 text-on-surface-variant hover:text-primary transition-colors">
+                    className="absolute right-2 text-white hover:text-primary transition-colors">
                     <span className="material-symbols-outlined text-[16px]">close</span>
                   </button>
                 )}
@@ -1399,9 +1399,9 @@ export default function WeeklyJournal() {
                       minWidth: 'calc(1481px * var(--tz))',
                     }}
                   >
-                    {/* Header row */}
+                    {/* Header row — matte black with bold white text, like the header buttons */}
                     <div
-                      className="grid border-b border-[#424242] bg-[#2f2f2f] font-label-md text-on-surface-variant uppercase tracking-wider w-full"
+                      className="grid border-b border-[#424242] bg-black font-label-md font-bold text-white uppercase tracking-wider w-full"
                       style={{
                         gridTemplateColumns,
                         fontSize: 'calc(14px * var(--tz))',
