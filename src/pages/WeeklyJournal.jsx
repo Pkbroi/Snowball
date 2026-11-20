@@ -1418,14 +1418,14 @@ export default function WeeklyJournal() {
                         lineHeight: 'calc(20px * var(--tz))',
                       }}
                     >
-                      <div className="p-[calc(12px*var(--tz))] border-r border-[#424242] flex items-center">Week</div>
+                      <div className="p-[calc(8px*var(--tz))] border-r border-[#424242] flex items-center">Week</div>
                       {['Monday','Tuesday','Wednesday','Thursday','Friday'].map((day) => (
-                        <div key={day} className="p-[calc(12px*var(--tz))] border-r border-[#424242] flex items-center justify-between">
+                        <div key={day} className="p-[calc(8px*var(--tz))] border-r border-[#424242] flex items-center justify-between">
                           {day}
                           <span className="material-symbols-outlined text-[calc(14px*var(--tz))] opacity-50">calendar_today</span>
                         </div>
                       ))}
-                      <div className="p-[calc(12px*var(--tz))] flex items-center">Remarks</div>
+                      <div className="p-[calc(8px*var(--tz))] flex items-center">Remarks</div>
                     </div>
 
                     {/* Data rows */}

@@ -47,8 +47,7 @@ test.describe('Weekly Journal', () => {
     expect(style.color).toBe('rgb(255, 255, 255)');
   });
 
-  test('remarks typed in the modal show in the front-page cell: first 5 lines, bold white', async ({ page }) => {
-    await page.getByTestId('add-week-btn').click();
+  test('remarks typed in the modal show in the front-page cell: first 5 lines, bold white', async ({ page }) => {    await page.getByTestId('add-week-btn').click();
     const cell = page.locator('[data-testid^="remarks-cell-"]').first();
     await expect(cell).toBeVisible();
     await cell.click();
@@ -75,6 +74,13 @@ test.describe('Weekly Journal', () => {
     });
     expect(style.weight).toBe('700');
     expect(style.color).toBe('rgb(255, 255, 255)');
+  });
+
+  test('heading row is slim: 37px tall at 100% zoom (8px padding)', async ({ page }) => {
+    const header = page.locator('.grid.border-b').first();
+    await expect(header).toBeVisible();
+    const box = await header.boundingBox();
+    expect(Math.round(box.height)).toBe(37);
   });
 
   test('should allow adding a new custom week row', async ({ page }) => {
