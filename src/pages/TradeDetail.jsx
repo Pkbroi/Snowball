@@ -351,7 +351,8 @@ const pencilTopPoint = (points) => {
   return top;
 };
 
-// Dotted resize frame for comment boxes: 8 handles, sides + corners.
+// Dotted resize handles for comment boxes: 8 handles, sides + corners,
+// sitting on the box's own dotted border (no second box around it).
 const RESIZE_DIRS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const RESIZE_HANDLE_POS = {
   nw: '-left-1.5 -top-1.5 cursor-nwse-resize',
@@ -588,8 +589,10 @@ export default function TradeDetail() {
      a comment places the text cursor (and selects the word); holding
      the second press and dragging moves the whole box instead — the
      text area covers the box, so a plain drag could never grab it.
-     Right-clicking a comment shows its delete (×) button and a dotted
-     resize frame with 8 handles for free-form resizing. ─────────── */
+     Right-clicking a comment turns the box's own border dotted and
+     shows 8 handles on its perimeter for free-form resizing, with the
+     delete (×) button riding on the top dotted line near the right
+     end — there is no second box around it. ─────────────────────── */
   const [annotations, setAnnotationsState] = useState(() => getAnnotations(weekId, dayName));
   const [annTool, setAnnTool] = useState('select');
   const [selectedAnnId, setSelectedAnnId] = useState(null);
@@ -852,10 +855,10 @@ export default function TradeDetail() {
     ta.setSelectionRange(s, en);
   };
 
-  // Resize a comment box by dragging its dotted frame's handles.
-  // Width/height are px; x/y stay in % of the picture. The box is kept
-  // inside the chart, and the size is stored on the mark (w/h) so it
-  // survives reload like the other marks.
+  // Resize a comment box by dragging the handles on its own dotted
+  // border. Width/height are px; x/y stay in % of the picture. The box
+  // is kept inside the chart, and the size is stored on the mark (w/h)
+  // so it survives reload like the other marks.
   const startResize = (e, ann, dir) => {
     if (annTool !== 'select' || e.button !== 0) return;
     e.stopPropagation();
@@ -1362,12 +1365,11 @@ export default function TradeDetail() {
                         onChange={(e) => { updateAnnText(a.id, e.target.value); if (!a.h) autoGrowComment(e.target); }}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
-                        className={`w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
+                        className={`w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded bg-black/85 ${annMenuId === a.id ? 'border-2 border-dotted border-amber-400 focus:border-amber-400' : 'border border-white/40'} p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
                       />
-                      {annDeleteBtn(a, '-right-2 -top-2')}
+                      {annDeleteBtn(a, 'right-3 top-0 -translate-y-1/2')}
                       {annMenuId === a.id && (
-                        <div data-testid="ann-comment-resize-frame" className="pointer-events-none absolute -inset-2 z-20">
-                          <div className="absolute inset-0 rounded border-2 border-dotted border-amber-400" />
+                        <div data-testid="ann-comment-resize" className="pointer-events-none absolute inset-0 z-20">
                           {RESIZE_DIRS.map((dir) => (
                             <button
                               key={dir}
