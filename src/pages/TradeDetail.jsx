@@ -351,6 +351,19 @@ const pencilTopPoint = (points) => {
   return top;
 };
 
+// Dotted resize frame for comment boxes: 8 handles, sides + corners.
+const RESIZE_DIRS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+const RESIZE_HANDLE_POS = {
+  nw: '-left-1.5 -top-1.5 cursor-nwse-resize',
+  n: 'left-1/2 -top-1.5 -translate-x-1/2 cursor-ns-resize',
+  ne: '-right-1.5 -top-1.5 cursor-nesw-resize',
+  e: '-right-1.5 top-1/2 -translate-y-1/2 cursor-ew-resize',
+  se: '-right-1.5 -bottom-1.5 cursor-nwse-resize',
+  s: 'left-1/2 -bottom-1.5 -translate-x-1/2 cursor-ns-resize',
+  sw: '-left-1.5 -bottom-1.5 cursor-nesw-resize',
+  w: '-left-1.5 top-1/2 -translate-y-1/2 cursor-ew-resize',
+};
+
 export default function TradeDetail() {
   const navigate  = useNavigate();
   const { id }    = useParams();
@@ -570,7 +583,13 @@ export default function TradeDetail() {
      picture rect, so % coords stay glued to the chart under pan/zoom.
      The toolbar is icons only and floats on top of the zoomed chart.
      Other tools are one-shot; the pencil stays armed stroke after
-     stroke until it is tapped again (or Escape). ─────────────────── */
+     stroke until it is tapped again (or Escape). A comment box carries
+     an optional w/h in px once it has been resized. A double-click on
+     a comment places the text cursor (and selects the word); holding
+     the second press and dragging moves the whole box instead — the
+     text area covers the box, so a plain drag could never grab it.
+     Right-clicking a comment shows its delete (×) button and a dotted
+     resize frame with 8 handles for free-form resizing. ─────────── */
   const [annotations, setAnnotationsState] = useState(() => getAnnotations(weekId, dayName));
   const [annTool, setAnnTool] = useState('select');
   const [selectedAnnId, setSelectedAnnId] = useState(null);
@@ -583,6 +602,10 @@ export default function TradeDetail() {
   // The stroke currently being drawn with the pencil (live preview).
   const [pencilDraft, setPencilDraft] = useState(null);
   const pencilDrawRef = useRef(null);
+  // A double-click press on a comment box that may become a move-drag.
+  const dblDragRef = useRef(null);
+  // A resize drag on a comment box's dotted frame.
+  const resizeDragRef = useRef(null);
   // A click that places a mark fires on the nearest common ancestor of
   // the mousedown/mouseup targets — the overlay, not the new mark — so
   // without this the click right after placing a comment (which disarms
@@ -801,6 +824,85 @@ export default function TradeDetail() {
     e.stopPropagation();
     setSelectedAnnId(ann.id);
     setAnnMenuId(ann.id);
+  };
+
+  // Double-click a comment box: focus its text and put the caret where
+  // the click landed, selecting the word there — the way a double-click
+  // in a text field behaves. Done by hand (caretRangeFromPoint) because
+  // the box's pointer handling would otherwise swallow the browser's
+  // own word selection.
+  const placeCursorInComment = (e) => {
+    const ta = e.currentTarget.querySelector('textarea');
+    if (!ta) return;
+    ta.focus();
+    const text = ta.value;
+    let off = null;
+    const doc = ta.ownerDocument;
+    if (doc.caretRangeFromPoint) {
+      const range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+      if (range && ta.contains(range.startContainer)) off = range.startOffset;
+    } else if (doc.caretPositionFromPoint) {
+      const pos = doc.caretPositionFromPoint(e.clientX, e.clientY);
+      if (pos && ta.contains(pos.offsetNode)) off = pos.offset;
+    }
+    if (off == null) off = text.length;
+    let s = off, en = off;
+    while (s > 0 && /\S/.test(text[s - 1])) s--;
+    while (en < text.length && /\S/.test(text[en])) en++;
+    ta.setSelectionRange(s, en);
+  };
+
+  // Resize a comment box by dragging its dotted frame's handles.
+  // Width/height are px; x/y stay in % of the picture. The box is kept
+  // inside the chart, and the size is stored on the mark (w/h) so it
+  // survives reload like the other marks.
+  const startResize = (e, ann, dir) => {
+    if (annTool !== 'select' || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const boxEl = e.currentTarget.closest('[data-ann-type="comment"]');
+    const origW = ann.w ?? 180;
+    const origH = ann.h ?? boxEl?.offsetHeight ?? 120;
+    resizeDragRef.current = {
+      id: ann.id, pointerId: e.pointerId, dir,
+      startX: e.clientX, startY: e.clientY,
+      origX: ann.x, origY: ann.y, origW, origH, latest: null,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onResizePointerMove = (e) => {
+    const d = resizeDragRef.current;
+    if (!d || d.pointerId !== e.pointerId || !picRect) return;
+    const dxPx = e.clientX - d.startX;
+    const dyPx = e.clientY - d.startY;
+    const minW = 140, minH = 84;
+    let w = d.origW, h = d.origH, x = d.origX, y = d.origY;
+    if (d.dir.includes('e')) w = Math.max(minW, d.origW + dxPx);
+    if (d.dir.includes('w')) {
+      w = Math.max(minW, d.origW - dxPx);
+      x = d.origX + ((d.origW - w) / picRect.width) * 100;
+    }
+    if (d.dir.includes('s')) h = Math.max(minH, d.origH + dyPx);
+    if (d.dir.includes('n')) {
+      h = Math.max(minH, d.origH - dyPx);
+      y = d.origY + ((d.origH - h) / picRect.height) * 100;
+    }
+    // Keep the box inside the picture.
+    if (x < 0) { w = d.origW + (d.origX / 100) * picRect.width; x = 0; }
+    if (y < 0) { h = d.origH + (d.origY / 100) * picRect.height; y = 0; }
+    const maxW = picRect.width - (x / 100) * picRect.width;
+    if (w > maxW) w = Math.max(minW, maxW);
+    const maxH = picRect.height - (y / 100) * picRect.height;
+    if (h > maxH) h = Math.max(minH, maxH);
+    const next = annotations.map((a) => (a.id === d.id ? { ...a, x, y, w: Math.round(w), h: Math.round(h) } : a));
+    d.latest = next;
+    setAnnotationsState(next);
+  };
+  const onResizePointerUp = (e) => {
+    const d = resizeDragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    resizeDragRef.current = null;
+    if (d.latest) persistAnnotations(d.latest);
   };
 
   // The × button a right-clicked mark shows at its top-right corner
@@ -1207,28 +1309,79 @@ export default function TradeDetail() {
                   return (
                     <div key={a.id} data-testid="ann-mark" data-ann-type="comment"
                       className={`absolute rounded ${selected ? 'ring-2 ring-white/70' : ''}`}
-                      style={{ left: `${a.x}%`, top: `${a.y}%`, width: 180 }}
+                      style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined }}
                       onPointerDown={(e) => {
                         e.stopPropagation();
-                        if (annTool === 'select' && !e.target.closest('textarea')) onAnnPointerDown(e, a);
+                        if (annTool === 'select' && e.button === 0 && !e.target.closest('textarea')) onAnnPointerDown(e, a);
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        if (annTool !== 'select' || e.button !== 0) return;
+                        if (e.detail === 2) {
+                          // Chromium reports pointerdown detail as 0, so the
+                          // click count is read from mousedown instead: the
+                          // second press of a double-click arms a move that
+                          // only starts once the pointer actually moves (see
+                          // onPointerMove); a still double-click places the
+                          // cursor instead (see onDoubleClick).
+                          dblDragRef.current = { id: a.id, startX: e.clientX, startY: e.clientY, origX: a.x, origY: a.y };
+                        }
+                      }}
+                      onPointerMove={(e) => {
+                        const d = dblDragRef.current;
+                        if (d && d.id === a.id) {
+                          if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 7) {
+                            // The double-click became a drag: move the box.
+                            dblDragRef.current = null;
+                            annDragRef.current = { id: d.id, pointerId: e.pointerId, startX: d.startX, startY: d.startY, origX: d.origX, origY: d.origY, origPoints: null, moved: true, latest: null };
+                            e.currentTarget.setPointerCapture?.(e.pointerId);
+                            onAnnPointerMove(e);
+                          }
+                          return;
+                        }
+                        onAnnPointerMove(e);
+                      }}
+                      onPointerUp={(e) => {
+                        dblDragRef.current = null;
+                        onAnnPointerUp(e);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (annTool !== 'select') return;
+                        placeCursorInComment(e);
                       }}
                       onContextMenu={(e) => onAnnContextMenu(e, a)}
-                      onPointerMove={onAnnPointerMove}
-                      onPointerUp={onAnnPointerUp}
                     >
                       <textarea
                         data-testid="ann-comment-text"
                         value={a.text ?? ''}
                         rows={2}
                         placeholder="Type a comment…"
-                        ref={(el) => { autoGrowComment(el); if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
-                        onChange={(e) => { updateAnnText(a.id, e.target.value); autoGrowComment(e.target); }}
-                        onPointerDown={(e) => e.stopPropagation()}
+                        ref={(el) => { if (!a.h) autoGrowComment(el); if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
+                        onChange={(e) => { updateAnnText(a.id, e.target.value); if (!a.h) autoGrowComment(e.target); }}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
-                        className="w-full min-h-[48px] max-h-[200px] overflow-y-auto resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold"
+                        className={`w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
                       />
                       {annDeleteBtn(a, '-right-2 -top-2')}
+                      {annMenuId === a.id && (
+                        <div data-testid="ann-comment-resize-frame" className="pointer-events-none absolute -inset-2 z-20">
+                          <div className="absolute inset-0 rounded border-2 border-dotted border-amber-400" />
+                          {RESIZE_DIRS.map((dir) => (
+                            <button
+                              key={dir}
+                              data-testid={`ann-resize-${dir}`}
+                              aria-label={`Resize comment ${dir}`}
+                              onPointerDown={(e) => startResize(e, a, dir)}
+                              onPointerMove={onResizePointerMove}
+                              onPointerUp={onResizePointerUp}
+                              onPointerCancel={onResizePointerUp}
+                              className={`pointer-events-auto absolute h-3 w-3 rounded-[2px] bg-white border border-black shadow ${RESIZE_HANDLE_POS[dir]}`}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 }
@@ -1425,7 +1578,7 @@ export default function TradeDetail() {
                       return (
                         <div key={a.id} data-testid="inline-ann-mark" data-ann-type="comment"
                           className="absolute rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white whitespace-pre-wrap break-words"
-                          style={{ left: `${a.x}%`, top: `${a.y}%`, width: 180 }}
+                          style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined, overflow: a.h ? 'hidden' : undefined }}
                         >
                           {a.text}
                         </div>

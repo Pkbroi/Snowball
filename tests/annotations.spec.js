@@ -13,6 +13,10 @@ import { makeChartPng } from './helpers/chart-png.js';
 // pencil stays armed stroke after stroke until it is tapped again.
 // Right-clicking a stroke selects it and shows a delete (×) button at its
 // top end; strokes also show read-only on the inline chart.
+// (v4.5.16) Comment boxes: double-click places the cursor (word
+// selected); double-click and drag moves the whole box. Right-clicking a
+// comment shows its delete (×) button and a dotted resize frame with 8
+// handles for free-form resizing; the size is stored per box.
 async function openLightboxWithChart(page, testInfo) {
   const fixture = path.join(testInfo.outputDir, 'chart-2560x1440.png');
   fs.mkdirSync(testInfo.outputDir, { recursive: true });
@@ -422,5 +426,138 @@ test.describe('Chart annotations (v4.5)', () => {
     const [x, y] = pts.trim().split(/\s+/)[0].split(',').map(Number);
     expect(x).toBeCloseTo(30, 0);
     expect(y).toBeCloseTo(40, 0);
+  });
+
+  test('double-click a comment box places the cursor in its text', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('breakout above 25,100');
+    // Click empty chart first so the box is not focused, then double-click
+    // on the text: the caret lands inside and a word is selected.
+    await page.mouse.click(box.x + box.width * 0.8, box.y + box.height * 0.8);
+    await expect(textarea).not.toBeFocused();
+    const tbox = await textarea.boundingBox();
+    await page.mouse.click(tbox.x + tbox.width / 2, tbox.y + tbox.height / 2, { clickCount: 2 });
+    await expect(textarea).toBeFocused();
+    const sel = await textarea.evaluate((el) => ({ start: el.selectionStart, end: el.selectionEnd }));
+    expect(sel.end).toBeGreaterThan(sel.start);
+    // The box did not move.
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    const left = await comment.evaluate((el) => parseFloat(el.style.left));
+    expect(left).toBeCloseTo(30, 0);
+  });
+
+  test('double-click and drag moves a comment box', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('held the level');
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    const before = await comment.evaluate((el) => parseFloat(el.style.left));
+    expect(before).toBeCloseTo(30, 0);
+    // Double-click on the text and drag on the second press: the whole
+    // box follows the mouse.
+    const tbox = await textarea.boundingBox();
+    const cx = tbox.x + tbox.width / 2;
+    const cy = tbox.y + tbox.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.up();
+    // The second press of a double-click (detail 2) held and dragged.
+    await page.mouse.down({ clickCount: 2 });
+    await page.mouse.move(cx + 120, cy + 40, { steps: 10 });
+    await page.mouse.up();
+    const after = await comment.evaluate((el) => parseFloat(el.style.left));
+    expect(after).toBeGreaterThan(before + 5);
+    const topAfter = await comment.evaluate((el) => parseFloat(el.style.top));
+    expect(topAfter).toBeGreaterThan(30);
+  });
+
+  test('right-click a comment box shows dotted resize handles; dragging one resizes it', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('held the level');
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    // Right-click the box: the delete button and the dotted resize frame
+    // with eight handles appear.
+    const cbox = await comment.boundingBox();
+    await page.mouse.click(cbox.x + cbox.width / 2, cbox.y + cbox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-mark-delete')).toHaveCount(1);
+    const frame = page.getByTestId('ann-comment-resize-frame');
+    await expect(frame).toBeVisible();
+    await expect(page.locator('[data-testid^="ann-resize-"]')).toHaveCount(8);
+    const beforeW = await comment.evaluate((el) => parseFloat(el.style.width));
+    expect(beforeW).toBeCloseTo(180, 0);
+    // Drag the east handle 60px wider.
+    const east = await page.getByTestId('ann-resize-e').boundingBox();
+    await page.mouse.move(east.x + east.width / 2, east.y + east.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(east.x + east.width / 2 + 60, east.y + east.height / 2, { steps: 10 });
+    await page.mouse.up();
+    const afterW = await comment.evaluate((el) => parseFloat(el.style.width));
+    expect(afterW).toBeGreaterThan(beforeW + 50);
+    // Drag the south handle 40px taller.
+    const beforeH = await comment.evaluate((el) => parseFloat(el.style.height));
+    const south = await page.getByTestId('ann-resize-s').boundingBox();
+    await page.mouse.move(south.x + south.width / 2, south.y + south.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(south.x + south.width / 2, south.y + south.height / 2 + 40, { steps: 10 });
+    await page.mouse.up();
+    const afterH = await comment.evaluate((el) => parseFloat(el.style.height));
+    expect(afterH).toBeGreaterThan(beforeH + 30);
+    // The size survives leaving and coming back.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('chart-lightbox')).toHaveCount(0);
+    await page.getByTestId('back-button').click();
+    await expect(page).toHaveURL(/\/(\?|$)/);
+    await page.locator('[data-testid^="day-cell-"]').first().dblclick();
+    await expect(page).toHaveURL(/\/trade\/.*/);
+    await expect(page.getByTestId('chart-image-container')).toBeVisible({ timeout: 15000 });
+    await page.getByTestId('chart-image-container').dblclick();
+    await expect(page.getByTestId('ann-overlay')).toBeVisible({ timeout: 15000 });
+    const reopened = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    await expect(reopened).toHaveCount(1);
+    const keptW = await reopened.evaluate((el) => parseFloat(el.style.width));
+    expect(keptW).toBeCloseTo(afterW, 0);
+    const keptH = await reopened.evaluate((el) => parseFloat(el.style.height));
+    expect(keptH).toBeCloseTo(afterH, 0);
+  });
+
+  test('Escape closes the comment resize frame', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('held the level');
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    const cbox = await comment.boundingBox();
+    await page.mouse.click(cbox.x + cbox.width / 2, cbox.y + cbox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-comment-resize-frame')).toBeVisible();
+    // First Escape blurs the comment's text area; the second clears the
+    // selection and the frame.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('ann-comment-resize-frame')).toHaveCount(0);
+    // The lightbox itself is still open.
+    await expect(page.getByTestId('chart-lightbox')).toBeVisible();
   });
 });
