@@ -526,17 +526,17 @@ function SettingsModal({ onClose }) {
       {/* Panel: top-right corner, just under the 48px header, above the Remarks column. */}
       <div
         data-testid="settings-panel"
-        className="absolute top-[60px] right-4 w-[380px] max-h-[calc(100vh-76px)] overflow-y-auto bg-black border border-[#424242] rounded-xl shadow-2xl flex flex-col p-5 gap-4"
+        className="absolute top-[60px] right-4 w-[380px] max-h-[calc(100vh-76px)] overflow-y-auto bg-black border border-[#424242] rounded-xl shadow-2xl flex flex-col p-4 gap-3"
       >
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="text-white font-bold text-[18px]">Settings</h2>
+          <h2 className="text-white font-bold text-[16px]">Settings</h2>
           <button
             onClick={() => { if (!isBusy) onClose(); }}
             disabled={isBusy}
-            className="w-8 h-8 flex items-center justify-center rounded-full bg-black border border-[#424242] text-white hover:bg-[#1a1a1a] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="w-7 h-7 flex items-center justify-center rounded-full bg-black border border-[#424242] text-white hover:bg-[#1a1a1a] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            <span className="material-symbols-outlined text-[18px]">close</span>
+            <span className="material-symbols-outlined text-[16px]">close</span>
           </button>
         </div>
         <div className="border-t border-[#424242]" />
@@ -576,7 +576,7 @@ function SettingsModal({ onClose }) {
 
         {/* ── Confirmation step (after tapping a Format option) ── */}
         {!isBusy && confirm && (
-          <div data-testid="format-confirm" className="flex flex-col gap-4 py-2">
+          <div data-testid="format-confirm" className="flex flex-col gap-3 py-1">
             <h3 data-testid="format-confirm-title" className="text-white font-bold text-[15px]">
               {confirm === 'wipe' ? `Wipe ${datasetLabel(currentDs)}` : `Delete ${currentDs.index} — all years`}
             </h3>
@@ -606,13 +606,12 @@ function SettingsModal({ onClose }) {
 
         {/* ── Normal controls (hidden while busy or confirming) ── */}
         {!isBusy && !confirm && (
-          <div className="flex flex-col gap-4 py-2">
+          <div className="flex flex-col gap-3 py-1">
             {/* Export */}
             <div>
               <h3 className="text-white font-bold text-[13px] tracking-wide">EXPORT DATABASE</h3>
-              <p className="text-white/60 text-[13px] mb-3">
-                Download your whole journal — every index and every year — as one single file.
-                Images export at <strong className="text-white">full quality</strong>.
+              <p className="text-white/60 text-[13px] mb-2">
+                Your whole journal — every index and every year — in one file, images at <strong className="text-white">full quality</strong>.
               </p>
               <button
                 onClick={handleExport}
@@ -629,10 +628,10 @@ function SettingsModal({ onClose }) {
             <div>
               <h3 className="text-white font-bold text-[13px] tracking-wide">IMPORT DATABASE</h3>
               <p className="text-[#dc2626] font-bold text-[13px] mb-1">
-                Warning: Importing replaces your entire local database with the backup file — all indexes and years.
+                Warning: Importing replaces your entire local database.
               </p>
-              <p className="text-white/60 text-[12px] mb-3">
-                A progress bar will appear — do not close the app until it completes.
+              <p className="text-white/60 text-[12px] mb-2">
+                Do not close the app until it completes.
               </p>
               <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleImport} />
               <button
@@ -649,11 +648,11 @@ function SettingsModal({ onClose }) {
             {/* Format */}
             <div>
               <h3 className="text-white font-bold text-[13px] tracking-wide">FORMAT</h3>
-              <div className="flex flex-col gap-2 mt-3">
+              <div className="flex flex-col gap-1.5 mt-2">
                 <button
                   data-testid="format-wipe-btn"
                   onClick={() => setConfirm('wipe')}
-                  className="w-full py-2 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
+                  className="w-full py-1.5 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
                 >
                   <span className="material-symbols-outlined text-[18px] text-[#dc2626]">warning</span>
                   <span className="flex flex-col items-start leading-tight">
@@ -664,7 +663,7 @@ function SettingsModal({ onClose }) {
                 <button
                   data-testid="format-delete-btn"
                   onClick={() => setConfirm('delete')}
-                  className="w-full py-2 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
+                  className="w-full py-1.5 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
                 >
                   <span className="material-symbols-outlined text-[18px] text-[#dc2626]">warning</span>
                   <span className="flex flex-col items-start leading-tight">

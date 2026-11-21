@@ -21,6 +21,8 @@ test.describe('Settings panel (top-right, app theme)', () => {
     expect(viewport.width - (box.x + box.width)).toBeLessThanOrEqual(20);
     // A floating panel, not a full page: narrower than the viewport, journal still visible.
     expect(box.width).toBeLessThanOrEqual(400);
+    // Compact: tightened spacing keeps the panel ~516px tall at a 720px viewport (was ~590px).
+    expect(box.height).toBeLessThanOrEqual(540);
     await expect(page.getByTestId('search-input')).toBeVisible();
     await expect(page.getByTestId('dataset-selector')).toBeVisible();
     // App theme: pure black panel, bold white heading.
