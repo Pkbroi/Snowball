@@ -537,8 +537,10 @@ test.describe('Chart annotations (v4.5)', () => {
     await page.mouse.up();
     const afterW = await comment.evaluate((el) => parseFloat(el.style.width));
     expect(afterW).toBeGreaterThan(beforeW + 50);
-    // Drag the south handle 40px taller.
-    const beforeH = await comment.evaluate((el) => parseFloat(el.style.height));
+    // Drag the south handle 40px taller — the text box itself must grow
+    // with the dotted border, not stay behind at its old height.
+    const beforeH = await comment.evaluate((el) => el.offsetHeight);
+    const beforeTaH = await textarea.evaluate((el) => el.offsetHeight);
     const south = await page.getByTestId('ann-resize-s').boundingBox();
     await page.mouse.move(south.x + south.width / 2, south.y + south.height / 2);
     await page.mouse.down();
@@ -546,6 +548,9 @@ test.describe('Chart annotations (v4.5)', () => {
     await page.mouse.up();
     const afterH = await comment.evaluate((el) => parseFloat(el.style.height));
     expect(afterH).toBeGreaterThan(beforeH + 30);
+    const afterTaH = await textarea.evaluate((el) => el.offsetHeight);
+    expect(afterTaH).toBeGreaterThan(beforeTaH + 30);
+    expect(Math.abs(afterTaH - (await comment.evaluate((el) => el.offsetHeight)))).toBeLessThanOrEqual(2);
     // The size survives leaving and coming back.
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
@@ -564,6 +569,70 @@ test.describe('Chart annotations (v4.5)', () => {
     expect(keptW).toBeCloseTo(afterW, 0);
     const keptH = await reopened.evaluate((el) => parseFloat(el.style.height));
     expect(keptH).toBeCloseTo(afterH, 0);
+  });
+
+  test('a sideways resize does not freeze the height — typing still grows the box', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('held the level');
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    const cbox = await comment.boundingBox();
+    await page.mouse.click(cbox.x + cbox.width / 2, cbox.y + cbox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-comment-resize')).toBeVisible();
+    // Widen only: a horizontal drag must not store a height.
+    const east = await page.getByTestId('ann-resize-e').boundingBox();
+    await page.mouse.move(east.x + east.width / 2, east.y + east.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(east.x + east.width / 2 + 60, east.y + east.height / 2, { steps: 10 });
+    await page.mouse.up();
+    const widenedW = await comment.evaluate((el) => parseFloat(el.style.width));
+    expect(widenedW).toBeGreaterThan(230);
+    expect(await comment.evaluate((el) => el.style.height)).toBe('');
+    // Typing more lines still grows the box downward to fit the text.
+    await textarea.click();
+    const startH = await textarea.evaluate((el) => el.offsetHeight);
+    const longText = ['first line', 'second line', 'third line', 'fourth line', 'fifth line', 'sixth line'].join('\n');
+    await textarea.fill(longText);
+    const grown = await textarea.evaluate((el) => ({ h: el.offsetHeight, scroll: el.scrollHeight }));
+    expect(grown.h).toBeGreaterThan(startH + 40);
+    expect(grown.scroll).toBeLessThanOrEqual(grown.h + 1);
+  });
+
+  test('typing grows a vertically resized box downward to fit the text', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const box = await overlay.boundingBox();
+    await page.getByTestId('ann-tool-comment').click();
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    const textarea = page.getByTestId('ann-comment-text');
+    await expect(textarea).toBeVisible();
+    await textarea.fill('held the level');
+    const comment = page.locator('[data-testid="ann-mark"][data-ann-type="comment"]');
+    const cbox = await comment.boundingBox();
+    await page.mouse.click(cbox.x + cbox.width / 2, cbox.y + cbox.height / 2, { button: 'right' });
+    await expect(page.getByTestId('ann-comment-resize')).toBeVisible();
+    // Fix the height with a south drag, then type past what it holds.
+    const south = await page.getByTestId('ann-resize-s').boundingBox();
+    await page.mouse.move(south.x + south.width / 2, south.y + south.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(south.x + south.width / 2, south.y + south.height / 2 + 40, { steps: 10 });
+    await page.mouse.up();
+    const resizedH = await comment.evaluate((el) => el.offsetHeight);
+    await textarea.click();
+    const longText = ['first line', 'second line', 'third line', 'fourth line', 'fifth line', 'sixth line'].join('\n');
+    await textarea.fill(longText);
+    const grown = await comment.evaluate((el) => {
+      const ta = el.querySelector('textarea');
+      return { boxH: el.offsetHeight, taH: ta.offsetHeight, scroll: ta.scrollHeight };
+    });
+    expect(grown.boxH).toBeGreaterThan(resizedH + 30);
+    expect(Math.abs(grown.taH - grown.boxH)).toBeLessThanOrEqual(2);
+    expect(grown.scroll).toBeLessThanOrEqual(grown.taH + 1);
   });
 
   test('Escape closes the comment resize handles', async ({ page }, testInfo) => {

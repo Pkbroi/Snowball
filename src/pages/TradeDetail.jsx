@@ -808,9 +808,36 @@ export default function TradeDetail() {
     if (d.moved && d.latest) persistAnnotations(d.latest);
   };
 
-  const updateAnnText = useCallback((id, text) => {
-    persistAnnotations(annotations.map((a) => (a.id === id ? { ...a, text } : a)));
-  }, [annotations, persistAnnotations]);
+  // Typing in a comment box grows it downward to fit the text.
+  // - No fixed height yet: the old auto-grow — the textarea's own inline
+  //   height follows its scrollHeight, up to 200px, then it scrolls.
+  // - Fixed height (the box was resized): if the text needs more room
+  //   than the box has, the stored h grows to fit (capped by the room
+  //   left on the chart); if it fits, the inline height is cleared so
+  //   the textarea fills the box via h-full. The inline height must
+  //   never be left stale: it beats the h-full class, so a box resized
+  //   taller would otherwise leave the text box behind at its old
+  //   height — the "second box" the vertical resize showed.
+  const updateAnnText = useCallback((id, text, taEl) => {
+    const ann = annotations.find((a) => a.id === id);
+    if (!ann) return;
+    let nextH;
+    if (taEl) {
+      taEl.style.height = 'auto';
+      const need = taEl.scrollHeight;
+      if (!ann.h) {
+        taEl.style.height = `${Math.min(need, 200)}px`;
+      } else if (need > ann.h) {
+        const topPx = (ann.y / 100) * (picRect?.height ?? 0);
+        const maxH = picRect ? Math.max(84, picRect.height - topPx) : 400;
+        nextH = Math.max(84, Math.min(need, maxH));
+        taEl.style.height = '';
+      } else {
+        taEl.style.height = '';
+      }
+    }
+    persistAnnotations(annotations.map((a) => (a.id === id ? { ...a, text, ...(nextH != null ? { h: nextH } : {}) } : a)));
+  }, [annotations, persistAnnotations, picRect]);
 
   // Grow a comment box to fit its text (up to 200px, then it scrolls).
   const autoGrowComment = (el) => {
@@ -890,14 +917,23 @@ export default function TradeDetail() {
       h = Math.max(minH, d.origH - dyPx);
       y = d.origY + ((d.origH - h) / picRect.height) * 100;
     }
-    // Keep the box inside the picture.
-    if (x < 0) { w = d.origW + (d.origX / 100) * picRect.width; x = 0; }
-    if (y < 0) { h = d.origH + (d.origY / 100) * picRect.height; y = 0; }
+    // Keep the box inside the picture (only the sides being dragged).
+    if (d.dir.includes('w') && x < 0) { w = d.origW + (d.origX / 100) * picRect.width; x = 0; }
+    if (d.dir.includes('n') && y < 0) { h = d.origH + (d.origY / 100) * picRect.height; y = 0; }
     const maxW = picRect.width - (x / 100) * picRect.width;
-    if (w > maxW) w = Math.max(minW, maxW);
+    if ((d.dir.includes('e') || d.dir.includes('w')) && w > maxW) w = Math.max(minW, maxW);
     const maxH = picRect.height - (y / 100) * picRect.height;
-    if (h > maxH) h = Math.max(minH, maxH);
-    const next = annotations.map((a) => (a.id === d.id ? { ...a, x, y, w: Math.round(w), h: Math.round(h) } : a));
+    if ((d.dir.includes('n') || d.dir.includes('s')) && h > maxH) h = Math.max(minH, maxH);
+    // Only the dimension being dragged is stored: a sideways drag must
+    // not freeze the height (an untouched h keeps the box auto-growing
+    // as text is typed), and a vertical drag must not touch the width.
+    const next = annotations.map((a) => {
+      if (a.id !== d.id) return a;
+      const out = { ...a };
+      if (d.dir.includes('e') || d.dir.includes('w')) { out.w = Math.round(w); out.x = x; }
+      if (d.dir.includes('n') || d.dir.includes('s')) { out.h = Math.round(h); out.y = y; }
+      return out;
+    });
     d.latest = next;
     setAnnotationsState(next);
   };
@@ -1361,8 +1397,8 @@ export default function TradeDetail() {
                         value={a.text ?? ''}
                         rows={2}
                         placeholder="Type a comment…"
-                        ref={(el) => { if (!a.h) autoGrowComment(el); if (el && a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
-                        onChange={(e) => { updateAnnText(a.id, e.target.value); if (!a.h) autoGrowComment(e.target); }}
+                        ref={(el) => { if (!el) return; if (a.h) el.style.height = ''; else autoGrowComment(el); if (a.id === focusAnnId) { el.focus(); setFocusAnnId(null); } }}
+                        onChange={(e) => { updateAnnText(a.id, e.target.value, e.target); }}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
                         className={`w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded bg-black/85 ${annMenuId === a.id ? 'border-2 border-dotted border-amber-400 focus:border-amber-400' : 'border border-white/40'} p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
