@@ -320,6 +320,37 @@ const ANN_ARROW_STYLE = {
   'arrow-yellow': { color: '#eab308', dir: 'down' },
 };
 
+// Pencil icon for the toolbar: a black pencil with a thin white outline,
+// so it reads on the dark toolbar (and stays black on the white active pill).
+function AnnPencil({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" fill="#000000" stroke="#ffffff" strokeWidth="1" />
+    </svg>
+  );
+}
+
+// A freehand pencil stroke: points are [[x, y], ...] in % of the displayed
+// picture. A bold black core over a wider white edge, so the black stays
+// visible on dark charts. vector-effect keeps the stroke width in px even
+// though the viewBox is stretched to the picture rect.
+function PencilStroke({ points, selected }) {
+  const d = points.map(([x, y]) => `${x},${y}`).join(' ');
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={d} fill="none" stroke="#ffffff" strokeWidth="8" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <polyline points={d} fill="none" stroke={selected ? '#fbbf24' : '#000000'} strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+// Topmost point of a stroke — where its right-click delete (×) sits.
+const pencilTopPoint = (points) => {
+  let top = points[0];
+  for (const p of points) if (p[1] < top[1]) top = p;
+  return top;
+};
+
 export default function TradeDetail() {
   const navigate  = useNavigate();
   const { id }    = useParams();
@@ -531,12 +562,15 @@ export default function TradeDetail() {
      A mark is { id, type, x, y, text? } with x/y in % of the displayed
      picture. Types: 'line' (TradingView-style horizontal line),
      'arrow-green-up' | 'arrow-green-down' (entry), 'arrow-red-up' |
-     'arrow-red-down' (exit), 'arrow-yellow' (spot marker), 'comment'.
-     Stored per week+day (storage.js) so marks survive reload and are
-     included in the whole-database backup. The overlay is sized to the
-     displayed picture rect, so % coords stay glued to the chart under
-     pan/zoom. The toolbar is icons only and floats on top of the
-     zoomed chart. ─────────────────────────────────────────────────── */
+     'arrow-red-down' (exit), 'arrow-yellow' (spot marker), 'comment',
+     and 'pencil' — a freehand stroke, { id, type: 'pencil', points }
+     with points as [[x, y], ...] in % of the picture. Stored per
+     week+day (storage.js) so marks survive reload and are included in
+     the whole-database backup. The overlay is sized to the displayed
+     picture rect, so % coords stay glued to the chart under pan/zoom.
+     The toolbar is icons only and floats on top of the zoomed chart.
+     Other tools are one-shot; the pencil stays armed stroke after
+     stroke until it is tapped again (or Escape). ─────────────────── */
   const [annotations, setAnnotationsState] = useState(() => getAnnotations(weekId, dayName));
   const [annTool, setAnnTool] = useState('select');
   const [selectedAnnId, setSelectedAnnId] = useState(null);
@@ -546,6 +580,9 @@ export default function TradeDetail() {
   const [clearArmed, setClearArmed] = useState(false);
   const [picRect, setPicRect] = useState(null);
   const annDragRef = useRef(null);
+  // The stroke currently being drawn with the pencil (live preview).
+  const [pencilDraft, setPencilDraft] = useState(null);
+  const pencilDrawRef = useRef(null);
   // A click that places a mark fires on the nearest common ancestor of
   // the mousedown/mouseup targets — the overlay, not the new mark — so
   // without this the click right after placing a comment (which disarms
@@ -627,6 +664,7 @@ export default function TradeDetail() {
   }, [picRect]);
 
   const placeAnnotation = useCallback((e) => {
+    if (annTool === 'pencil') return; // the pencil draws via its own pointer handlers
     const p = pointToPct(e.clientX, e.clientY);
     if (!p) return;
     justPlacedRef.current = Date.now();
@@ -646,6 +684,38 @@ export default function TradeDetail() {
     setAnnTool('select');
     setClearArmed(false);
   }, [annTool, annotations, persistAnnotations, pointToPct]);
+
+  // Pencil drawing: pointerdown starts a stroke, pointermove extends it,
+  // pointerup stores it. Unlike the one-shot tools, the pencil stays
+  // armed afterwards — tap the pencil button again (or Escape) to stop.
+  const startPencilDraw = (e) => {
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    const nid = `ann_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    pencilDrawRef.current = { id: nid, pointerId: e.pointerId, points: [[p.x, p.y]] };
+    setPencilDraft([[p.x, p.y]]);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const movePencilDraw = (e) => {
+    const d = pencilDrawRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    const last = d.points[d.points.length - 1];
+    if (last && Math.hypot(p.x - last[0], p.y - last[1]) < 0.15) return;
+    d.points.push([p.x, p.y]);
+    setPencilDraft([...d.points]);
+  };
+  const endPencilDraw = (e) => {
+    const d = pencilDrawRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    pencilDrawRef.current = null;
+    // A tap with no drag is a dot, not an empty stroke.
+    const pts = d.points.length < 2 ? [d.points[0], d.points[0]] : d.points;
+    setPencilDraft(null);
+    justPlacedRef.current = Date.now();
+    persistAnnotations([...annotations, { id: d.id, type: 'pencil', points: pts }]);
+  };
 
   const deleteAnn = useCallback((id) => {
     persistAnnotations(annotations.filter((a) => a.id !== id));
@@ -685,7 +755,7 @@ export default function TradeDetail() {
     annDragRef.current = {
       id: ann.id, pointerId: e.pointerId,
       startX: e.clientX, startY: e.clientY,
-      origX: ann.x, origY: ann.y, moved: false, latest: null,
+      origX: ann.x, origY: ann.y, origPoints: ann.points ?? null, moved: false, latest: null,
     };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
@@ -699,6 +769,7 @@ export default function TradeDetail() {
     const next = annotations.map((a) => {
       if (a.id !== d.id) return a;
       if (a.type === 'line') return { ...a, y: clamp01(d.origY + dyPct) };
+      if (a.type === 'pencil' && d.origPoints) return { ...a, points: d.origPoints.map(([px, py]) => [clamp01(px + dxPct), clamp01(py + dyPct)]) };
       return { ...a, x: clamp01(d.origX + dxPct), y: clamp01(d.origY + dyPct) };
     });
     d.latest = next;
@@ -732,9 +803,11 @@ export default function TradeDetail() {
     setAnnMenuId(ann.id);
   };
 
-  // The × button a right-clicked mark shows at its top-right corner.
-  // Black with a white ring so it reads on light and dark charts alike.
-  const annDeleteBtn = (ann, positionClass) => (
+  // The × button a right-clicked mark shows at its top-right corner
+  // (at a pencil stroke's topmost point). Black with a white ring so it
+  // reads on light and dark charts alike. positionStyle pins it for
+  // marks whose box is the whole overlay, like a pencil stroke.
+  const annDeleteBtn = (ann, positionClass, positionStyle) => (
     annMenuId === ann.id ? (
       <button
         data-testid="ann-mark-delete"
@@ -742,7 +815,8 @@ export default function TradeDetail() {
         title="Delete this mark"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); deleteAnn(ann.id); }}
-        className={`absolute z-10 flex h-5 w-5 items-center justify-center rounded-full bg-black text-white ring-1 ring-white shadow-md ${positionClass}`}
+        style={positionStyle}
+        className={`absolute z-10 pointer-events-auto flex h-5 w-5 items-center justify-center rounded-full bg-black text-white ring-1 ring-white shadow-md ${positionClass}`}
       >
         <span className="material-symbols-outlined text-[14px] leading-none">close</span>
       </button>
@@ -778,6 +852,8 @@ export default function TradeDetail() {
       setAnnTool('select');
       setSelectedAnnId(null);
       setAnnMenuId(null);
+      setPencilDraft(null);
+      pencilDrawRef.current = null;
 
       const savedTradeDate = getTradeDate(weekId, dayName);
       setTradeDateState(savedTradeDate);
@@ -1027,6 +1103,7 @@ export default function TradeDetail() {
             >
               {annToolBtn('select', 'Select / move', <span className="material-symbols-outlined text-[20px]">near_me</span>)}
               {annToolBtn('line', 'Horizontal line', <span className="material-symbols-outlined text-[20px]">horizontal_rule</span>)}
+              {annToolBtn('pencil', 'Pencil — draw freehand', <AnnPencil size={20} />)}
               <div className="h-6 border-l border-outline-variant/50" />
               {annToolBtn('arrow-green-up', 'Green up arrow — entry', <AnnArrow color="#22c55e" dir="up" size={20} />)}
               {annToolBtn('arrow-green-down', 'Green down arrow — entry', <AnnArrow color="#22c55e" dir="down" size={20} />)}
@@ -1071,6 +1148,14 @@ export default function TradeDetail() {
               className="absolute z-40"
               style={{ left: picRect.left, top: picRect.top, width: picRect.width, height: picRect.height }}
               onPointerDown={(e) => {
+                if (annTool === 'pencil' && e.button === 0) {
+                  // The pencil draws freehand: pointerdown starts the
+                  // stroke, pointermove extends it, pointerup stores it.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  startPencilDraw(e);
+                  return;
+                }
                 if (annTool !== 'select' && e.button === 0) {
                   // preventDefault stops the compatibility mousedown whose
                   // default action would blur the comment box React just
@@ -1082,6 +1167,9 @@ export default function TradeDetail() {
                 // Select mode: let the event bubble to the container (pan / backdrop close).
                 // A right-click never places — it is for the mark menu instead.
               }}
+              onPointerMove={movePencilDraw}
+              onPointerUp={endPencilDraw}
+              onPointerCancel={endPencilDraw}
               onClick={(e) => {
                 if (annTool !== 'select' || e.target !== e.currentTarget || lbDragged.current || Date.now() - justPlacedRef.current <= 300) return;
                 // An empty click dismisses the right-click delete button,
@@ -1144,6 +1232,32 @@ export default function TradeDetail() {
                     </div>
                   );
                 }
+                if (a.type === 'pencil') {
+                  const top = pencilTopPoint(a.points);
+                  return (
+                    <div key={a.id} data-testid="ann-mark" data-ann-type="pencil"
+                      className="absolute inset-0 pointer-events-none"
+                    >
+                      <PencilStroke points={a.points} selected={selected} />
+                      {/* Wide invisible hit stroke so the line is easy to
+                          grab, right-click and drag — the visible stroke
+                          itself is only a few px wide. */}
+                      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                        <polyline
+                          points={a.points.map(([x, y]) => `${x},${y}`).join(' ')}
+                          fill="none" stroke="rgba(0,0,0,0)" strokeWidth="18"
+                          strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke"
+                          style={{ pointerEvents: 'stroke', cursor: 'move' }}
+                          onPointerDown={(e) => { if (annTool === 'select') onAnnPointerDown(e, a); }}
+                          onContextMenu={(e) => onAnnContextMenu(e, a)}
+                          onPointerMove={onAnnPointerMove}
+                          onPointerUp={onAnnPointerUp}
+                        />
+                      </svg>
+                      {annDeleteBtn(a, '', { left: `${top[0]}%`, top: `${top[1]}%`, transform: 'translate(-50%, -50%)' })}
+                    </div>
+                  );
+                }
                 const style = ANN_ARROW_STYLE[a.type];
                 if (!style) return null;
                 const isUp = style.dir === 'up';
@@ -1161,6 +1275,8 @@ export default function TradeDetail() {
                   </div>
                 );
               })}
+              {/* The stroke being drawn right now (live preview). */}
+              {pencilDraft && <PencilStroke points={pencilDraft} selected={false} />}
             </div>
           )}
           {/* Zoom controls */}
@@ -1283,9 +1399,10 @@ export default function TradeDetail() {
                 className={`w-full h-full object-cover pointer-events-none transition-opacity duration-300 ${mediumLoaded || fullLoaded ? 'opacity-100' : 'opacity-70'}`}
               />
               {/* Read-only marks over the inline chart — the same arrows,
-                  line and comments from the fullscreen chart, so they stay
-                  visible on the notes page. Not interactive: open the
-                  fullscreen chart to move, edit or delete a mark. */}
+                  line, comments and pencil strokes from the fullscreen
+                  chart, so they stay visible on the notes page. Not
+                  interactive: open the fullscreen chart to move, edit or
+                  delete a mark. */}
               {chartImg && inlinePicRect && annotations.length > 0 && (
                 <div
                   data-testid="inline-ann-overlay"
@@ -1311,6 +1428,15 @@ export default function TradeDetail() {
                           style={{ left: `${a.x}%`, top: `${a.y}%`, width: 180 }}
                         >
                           {a.text}
+                        </div>
+                      );
+                    }
+                    if (a.type === 'pencil') {
+                      return (
+                        <div key={a.id} data-testid="inline-ann-mark" data-ann-type="pencil"
+                          className="absolute inset-0 pointer-events-none"
+                        >
+                          <PencilStroke points={a.points} selected={false} />
                         </div>
                       );
                     }

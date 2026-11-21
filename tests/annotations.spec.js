@@ -9,6 +9,10 @@ import { makeChartPng } from './helpers/chart-png.js';
 // 2 red vertical arrows (exit), 1 yellow marker arrow, and a comment box
 // whose font is always bold. Marks are stored per week+day, so they
 // survive reload and travel with the whole-database backup.
+// (v4.5.15) A black bold pencil: click-drag draws a freehand stroke; the
+// pencil stays armed stroke after stroke until it is tapped again.
+// Right-clicking a stroke selects it and shows a delete (×) button at its
+// top end; strokes also show read-only on the inline chart.
 async function openLightboxWithChart(page, testInfo) {
   const fixture = path.join(testInfo.outputDir, 'chart-2560x1440.png');
   fs.mkdirSync(testInfo.outputDir, { recursive: true });
@@ -28,8 +32,17 @@ async function openLightboxWithChart(page, testInfo) {
   await expect(page.getByTestId('ann-toolbar')).toBeVisible();
 }
 
+// Draw one pencil stroke across the overlay, from (x1%, y1%) to (x2%, y2%).
+async function drawPencilStroke(page, overlay, x1, y1, x2, y2) {
+  const box = await overlay.boundingBox();
+  await page.mouse.move(box.x + (box.width * x1) / 100, box.y + (box.height * y1) / 100);
+  await page.mouse.down();
+  await page.mouse.move(box.x + (box.width * x2) / 100, box.y + (box.height * y2) / 100, { steps: 12 });
+  await page.mouse.up();
+}
+
 test.describe('Chart annotations (v4.5)', () => {
-  test('toolbar is icons only, with the line, 4 entry/exit arrows and yellow marker', async ({ page }, testInfo) => {
+  test('toolbar is icons only, with the line, pencil, 4 entry/exit arrows and yellow marker', async ({ page }, testInfo) => {
     await openLightboxWithChart(page, testInfo);
     const toolbar = page.getByTestId('ann-toolbar');
     // No word labels anywhere on the bar — the symbols are enough.
@@ -37,7 +50,7 @@ test.describe('Chart annotations (v4.5)', () => {
     await expect(toolbar).not.toContainText('EXIT');
     await expect(toolbar).not.toContainText('GREEN');
     await expect(toolbar).not.toContainText('RED');
-    for (const tool of ['select', 'line', 'arrow-green-up', 'arrow-green-down', 'arrow-red-up', 'arrow-red-down', 'arrow-yellow', 'comment']) {
+    for (const tool of ['select', 'line', 'pencil', 'arrow-green-up', 'arrow-green-down', 'arrow-red-up', 'arrow-red-down', 'arrow-yellow', 'comment']) {
       await expect(page.getByTestId(`ann-tool-${tool}`)).toBeVisible();
     }
     // Arming a tool inverts it; clicking it again disarms back to select.
@@ -316,5 +329,98 @@ test.describe('Chart annotations (v4.5)', () => {
     expect((arrowBox.y - chart.y) / chart.height).toBeCloseTo(0.4, 1);
     const lineBox = await page.locator('[data-testid="inline-ann-mark"][data-ann-type="line"]').boundingBox();
     expect((lineBox.y + lineBox.height / 2 - chart.y) / chart.height).toBeCloseTo(0.6, 1);
+  });
+
+  test('pencil draws a freehand stroke with click-drag and stays armed until tapped again', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    const strokes = page.locator('[data-testid="ann-mark"][data-ann-type="pencil"]');
+    await expect(strokes).toHaveCount(0);
+
+    await page.getByTestId('ann-tool-pencil').click();
+    await expect(page.getByTestId('ann-tool-pencil')).toHaveAttribute('aria-pressed', 'true');
+    await drawPencilStroke(page, overlay, 30, 40, 50, 60);
+    await expect(strokes).toHaveCount(1);
+    // The stroke is a black bold line: black core, several points.
+    const core = strokes.first().locator('polyline').nth(1);
+    await expect(core).toHaveAttribute('stroke', '#000000');
+    const pts = await strokes.first().locator('polyline').last().getAttribute('points');
+    expect(pts.trim().split(/\s+/).length).toBeGreaterThan(2);
+    // Latched, not one-shot: still armed, and a second stroke draws one more.
+    await expect(page.getByTestId('ann-tool-pencil')).toHaveAttribute('aria-pressed', 'true');
+    await drawPencilStroke(page, overlay, 60, 30, 75, 45);
+    await expect(strokes).toHaveCount(2);
+    // Tap the pencil again to put it away; dragging now draws nothing.
+    await page.getByTestId('ann-tool-pencil').click();
+    await expect(page.getByTestId('ann-tool-pencil')).toHaveAttribute('aria-pressed', 'false');
+    await drawPencilStroke(page, overlay, 20, 70, 35, 80);
+    await expect(strokes).toHaveCount(2);
+  });
+
+  test('right-click a pencil stroke shows a delete button at its top end', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    await page.getByTestId('ann-tool-pencil').click();
+    await drawPencilStroke(page, overlay, 30, 40, 50, 60);
+    const stroke = page.locator('[data-testid="ann-mark"][data-ann-type="pencil"]');
+    await expect(stroke).toHaveCount(1);
+    // Right-click on the stroke itself (its midpoint) — not empty chart.
+    const box = await overlay.boundingBox();
+    await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5, { button: 'right' });
+    const del = page.getByTestId('ann-mark-delete');
+    await expect(del).toHaveCount(1);
+    // The × sits at the stroke's top end — the drag started at (30%, 40%).
+    const delBox = await del.boundingBox();
+    expect((delBox.x + delBox.width / 2 - box.x) / box.width).toBeCloseTo(0.3, 1);
+    expect((delBox.y + delBox.height / 2 - box.y) / box.height).toBeCloseTo(0.4, 1);
+    await del.click();
+    await expect(stroke).toHaveCount(0);
+  });
+
+  test('dragging a pencil stroke moves it', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    await page.getByTestId('ann-tool-pencil').click();
+    await drawPencilStroke(page, overlay, 30, 40, 40, 50);
+    const stroke = page.locator('[data-testid="ann-mark"][data-ann-type="pencil"]');
+    await expect(stroke).toHaveCount(1);
+    const hitLine = stroke.locator('polyline').last();
+    const firstPoint = async () => {
+      const pts = await hitLine.getAttribute('points');
+      const [x, y] = pts.trim().split(/\s+/)[0].split(',').map(Number);
+      return { x, y };
+    };
+    const before = await firstPoint();
+    expect(before.x).toBeCloseTo(30, 0);
+    // One Escape disarms the pencil, then drag the stroke from its midpoint.
+    await page.keyboard.press('Escape');
+    const box = await overlay.boundingBox();
+    await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.45);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.35 + 120, box.y + box.height * 0.45, { steps: 10 });
+    await page.mouse.up();
+    const after = await firstPoint();
+    expect(after.x).toBeGreaterThan(before.x + 5);
+    expect(after.y).toBeCloseTo(before.y, 0);
+  });
+
+  test('pencil strokes show on the inline chart on the detail page', async ({ page }, testInfo) => {
+    await openLightboxWithChart(page, testInfo);
+    const overlay = page.getByTestId('ann-overlay');
+    await page.getByTestId('ann-tool-pencil').click();
+    await drawPencilStroke(page, overlay, 30, 40, 50, 60);
+    await expect(page.locator('[data-testid="ann-mark"][data-ann-type="pencil"]')).toHaveCount(1);
+    // Close the lightbox (Escape: disarm the pencil, then close).
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('chart-lightbox')).toHaveCount(0);
+    const inline = page.locator('[data-testid="inline-ann-mark"][data-ann-type="pencil"]');
+    await expect(inline).toHaveCount(1);
+    // The stroke keeps its % coords on the inline chart.
+    const pts = await inline.locator('polyline').first().getAttribute('points');
+    const [x, y] = pts.trim().split(/\s+/)[0].split(',').map(Number);
+    expect(x).toBeCloseTo(30, 0);
+    expect(y).toBeCloseTo(40, 0);
   });
 });
