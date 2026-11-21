@@ -284,4 +284,41 @@ describe('Datasets (index × year)', () => {
     await storage.switchDataset('nifty-50_2026');
     expect(storage.getTags('week-1', 'Monday')).toEqual(['NiftyWin']);
   });
+
+  it('deleteIndex removes every year of that index and keeps the others', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    await storage.createDataset('Nifty 50', 2025);
+    await storage.switchDataset('nifty-50_2025');
+    storage.setTags('week-1', 'Monday', ['Nifty25Win']);
+    await storage.createDataset('Bank Nifty', 2026);
+    await storage.switchDataset('bank-nifty_2026');
+    storage.setTags('week-1', 'Monday', ['BankWin']);
+
+    const landed = await storage.deleteIndex('Nifty 50');
+    // Only Bank Nifty survives, and the journal lands on it.
+    expect(storage.getDatasets()).toEqual([{ id: 'bank-nifty_2026', index: 'Bank Nifty', year: 2026 }]);
+    expect(storage.getCurrentDataset().id).toBe('bank-nifty_2026');
+    expect(landed.id).toBe('bank-nifty_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['BankWin']);
+    // No Nifty 50 key survives, either year.
+    const allKeys = await keys();
+    expect(allKeys.filter((k) => typeof k === 'string' && k.includes('nifty-50'))).toEqual([]);
+  });
+
+  it('deleteIndex recreates a fresh empty default when it was the only index', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['NiftyWin']);
+    const landed = await storage.deleteIndex('Nifty 50');
+    expect(storage.getDatasets()).toEqual([{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]);
+    expect(storage.getCurrentDataset().id).toBe('nifty-50_2026');
+    expect(landed.id).toBe('nifty-50_2026');
+    expect(storage.getTags('week-1', 'Monday')).toEqual([]);
+  });
+
+  it('deleteIndex rejects an unknown index', async () => {
+    const storage = await import('./storage');
+    await expect(storage.deleteIndex('No Such Index')).rejects.toThrow('Unknown index');
+  });
 });

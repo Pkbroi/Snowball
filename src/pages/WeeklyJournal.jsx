@@ -10,7 +10,7 @@ import {
   getRemarks, setRemarks, getRemarksText, getRemarksPreview,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
-  exportDatabase, importDatabase, formatDatabase, getTags, getTradeDate,
+  exportDatabase, importDatabase, formatDatabase, deleteIndex, getTags, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel
 } from '../data/storage.js';
 
@@ -407,15 +407,21 @@ function SettingsModal({ onClose }) {
    */
   const [op, setOp] = useState({ status: 'idle', step: '', done: 0, total: 0 });
   const isBusy = op.status !== 'idle';
+  // confirm: null | 'wipe' | 'delete' — the in-panel data-loss confirmation step.
+  const [confirm, setConfirm] = useState(null);
 
   useEffect(() => {
     const handleEsc = (e) => {
       // Block Escape while an operation is running to prevent accidental cancellation
-      if (e.key === 'Escape' && !isBusy) onClose();
+      if (e.key === 'Escape' && !isBusy) {
+        // Escape first backs out of the confirmation step, then closes the panel.
+        if (confirm) setConfirm(null);
+        else onClose();
+      }
     };
     document.addEventListener('keydown', handleEsc);
     return () => document.removeEventListener('keydown', handleEsc);
-  }, [onClose, isBusy]);
+  }, [onClose, isBusy, confirm]);
 
   const currentDs = getCurrentDataset();
 
@@ -482,17 +488,31 @@ function SettingsModal({ onClose }) {
     }
   };
 
-  const handleFormat = async () => {
+  // Wipe only the current (index, year) combination — other indexes and years are untouched.
+  const handleWipe = async () => {
     if (isBusy) return;
-    if (window.confirm(`Are you sure you want to delete all data for ${datasetLabel(currentDs)}? Other indexes and years are untouched. This action cannot be undone.`)) {
-      try {
-        await formatDatabase();
-        alert(`All data for ${datasetLabel(currentDs)} wiped successfully. App will reload.`);
-        window.location.reload();
-      } catch (err) {
-        console.error(err);
-        alert('Failed to wipe data.');
-      }
+    try {
+      setOp({ status: 'wiping', step: `Wiping ${datasetLabel(currentDs)}…`, done: 0, total: 0 });
+      await formatDatabase();
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
+      alert('Failed to wipe data.');
+    }
+  };
+
+  // Delete the whole index — every year — with all its data.
+  const handleDelete = async () => {
+    if (isBusy) return;
+    try {
+      setOp({ status: 'deleting', step: `Deleting ${currentDs.index}…`, done: 0, total: 0 });
+      await deleteIndex(currentDs.index);
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
+      alert('Failed to delete index.');
     }
   };
 
@@ -500,112 +520,159 @@ function SettingsModal({ onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50"
       onClick={(e) => { if (e.target === e.currentTarget && !isBusy) onClose(); }}
     >
-      <div className="w-full max-w-md layer-surface rounded-xl flex flex-col p-xl gap-4">
+      {/* Panel: top-right corner, just under the 48px header, above the Remarks column. */}
+      <div
+        data-testid="settings-panel"
+        className="absolute top-[60px] right-4 w-[380px] max-h-[calc(100vh-76px)] overflow-y-auto bg-black border border-[#424242] rounded-xl shadow-2xl flex flex-col p-5 gap-4"
+      >
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="font-headline-sm text-headline-sm text-on-surface">Settings</h2>
+          <h2 className="text-white font-bold text-[18px]">Settings</h2>
           <button
             onClick={() => { if (!isBusy) onClose(); }}
             disabled={isBusy}
-            className="p-2 hover:bg-surface-bright rounded-full text-on-surface-variant disabled:opacity-30 disabled:cursor-not-allowed transition-opacity"
+            className="w-8 h-8 flex items-center justify-center rounded-full bg-black border border-[#424242] text-white hover:bg-[#1a1a1a] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
         </div>
-        <div className="border-t border-outline-variant" />
+        <div className="border-t border-[#424242]" />
 
-        {/* ── Progress panel (shown while exporting or importing) ── */}
+        {/* ── Progress panel (shown while exporting, importing, wiping or deleting) ── */}
         {isBusy && (
           <div className="flex flex-col items-center gap-3 py-4 px-2">
-            <span className="material-symbols-outlined text-[32px] text-primary animate-spin select-none">
+            <span className="material-symbols-outlined text-[32px] text-white animate-spin select-none">
               progress_activity
             </span>
-            <p className="text-on-surface font-label-md text-center leading-snug">{op.step}</p>
+            <p className="text-white font-bold text-center leading-snug">{op.step}</p>
 
             {op.total > 0 && (
               <div className="w-full flex flex-col gap-1.5">
                 {/* Progress bar */}
-                <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+                <div className="w-full bg-[#2f2f2f] rounded-full h-2 overflow-hidden">
                   <div
-                    className="h-full rounded-full transition-all duration-300 ease-out"
-                    style={{
-                      width: `${pct}%`,
-                      background: 'linear-gradient(90deg, var(--md-sys-color-primary, #ececec), var(--md-sys-color-tertiary, #9b9b9b))',
-                    }}
+                    className="h-full bg-white rounded-full transition-all duration-300 ease-out"
+                    style={{ width: `${pct}%` }}
                   />
                 </div>
                 {/* Count + percentage */}
-                <div className="flex justify-between text-[11px] text-on-surface-variant tabular-nums">
+                <div className="flex justify-between text-[11px] text-white/60 tabular-nums">
                   <span>{op.done} / {op.total}</span>
                   <span>{pct}%</span>
                 </div>
               </div>
             )}
 
-            <p className="text-[11px] text-on-surface-variant text-center mt-1">
-              {op.status === 'exporting' ? 'Please keep this window open while exporting.' : 'Please keep this window open while importing.'}
-            </p>
+            {(op.status === 'exporting' || op.status === 'importing') && (
+              <p className="text-[11px] text-white/60 text-center mt-1">
+                {op.status === 'exporting' ? 'Please keep this window open while exporting.' : 'Please keep this window open while importing.'}
+              </p>
+            )}
           </div>
         )}
 
-        {/* ── Normal controls (hidden while busy) ── */}
-        {!isBusy && (
+        {/* ── Confirmation step (after tapping a Format option) ── */}
+        {!isBusy && confirm && (
+          <div data-testid="format-confirm" className="flex flex-col gap-4 py-2">
+            <h3 data-testid="format-confirm-title" className="text-white font-bold text-[15px]">
+              {confirm === 'wipe' ? `Wipe ${datasetLabel(currentDs)}` : `Delete ${currentDs.index} — all years`}
+            </h3>
+            <p className="text-[#dc2626] font-bold text-[13px] leading-snug">
+              {confirm === 'wipe'
+                ? `This will permanently wipe every week, remark and chart for ${datasetLabel(currentDs)} only. Other indexes and years are untouched. This cannot be undone.`
+                : `This will permanently delete ${currentDs.index} for every year — all weeks, remarks and charts. This cannot be undone.`}
+            </p>
+            <div className="flex gap-3">
+              <button
+                data-testid="format-confirm-cancel"
+                onClick={() => setConfirm(null)}
+                className="flex-1 py-2 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center justify-center transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="format-confirm-ok"
+                onClick={confirm === 'wipe' ? handleWipe : handleDelete}
+                className="flex-1 py-2 bg-[#dc2626] hover:bg-[#b91c1c] rounded-lg text-white font-bold flex items-center justify-center transition-colors"
+              >
+                {confirm === 'wipe' ? `Yes, wipe ${datasetLabel(currentDs)}` : `Yes, delete ${currentDs.index}`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Normal controls (hidden while busy or confirming) ── */}
+        {!isBusy && !confirm && (
           <div className="flex flex-col gap-4 py-2">
             {/* Export */}
             <div>
-              <h3 className="font-label-lg text-label-lg text-on-surface">Export Database — Everything</h3>
-              <p className="text-on-surface-variant text-[13px] mb-3">
-                Download your whole journal — every index and every year — as one single portable file.
-                Images are exported at <strong>full quality</strong> — no re-compression.
+              <h3 className="text-white font-bold text-[13px] tracking-wide">EXPORT DATABASE</h3>
+              <p className="text-white/60 text-[13px] mb-3">
+                Download your whole journal — every index and every year — as one single file.
+                Images export at <strong className="text-white">full quality</strong>.
               </p>
               <button
                 onClick={handleExport}
-                className="w-full py-2 bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant rounded-lg text-on-surface font-label-md flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center justify-center gap-2 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">download</span>
                 Export as JSON
               </button>
             </div>
 
-            <div className="border-t border-outline-variant" />
+            <div className="border-t border-[#424242]" />
 
             {/* Import */}
             <div>
-              <h3 className="font-label-lg text-label-lg text-on-surface">Import Database</h3>
-              <p className="text-on-surface-variant text-[13px] mb-1 text-error">
+              <h3 className="text-white font-bold text-[13px] tracking-wide">IMPORT DATABASE</h3>
+              <p className="text-[#dc2626] font-bold text-[13px] mb-1">
                 Warning: Importing replaces your entire local database with the backup file — all indexes and years.
               </p>
-              <p className="text-on-surface-variant text-[12px] mb-3">
+              <p className="text-white/60 text-[12px] mb-3">
                 A progress bar will appear — do not close the app until it completes.
               </p>
               <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleImport} />
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full py-2 bg-white/5 hover:bg-white/10 border border-outline/50 rounded-lg text-error font-label-md flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center justify-center gap-2 transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">upload</span>
                 Import JSON Backup
               </button>
             </div>
 
-            <div className="border-t border-outline-variant" />
+            <div className="border-t border-[#424242]" />
 
             {/* Format */}
             <div>
-              <h3 className="font-label-lg text-label-lg text-on-surface">Format This Dataset — {datasetLabel(currentDs)}</h3>
-              <p className="text-on-surface-variant text-[13px] mb-3 text-error">
-                Warning: This will permanently wipe every week, remark and chart for {datasetLabel(currentDs)} only. Other indexes and years are untouched.
-              </p>
-              <button
-                onClick={handleFormat}
-                className="w-full py-2 bg-error text-on-error hover:bg-error/90 rounded-lg font-label-md flex items-center justify-center gap-2 transition-colors"
-              >
-                <span className="material-symbols-outlined text-[18px]">delete_forever</span>
-                Wipe Dataset
-              </button>
+              <h3 className="text-white font-bold text-[13px] tracking-wide">FORMAT</h3>
+              <div className="flex flex-col gap-2 mt-3">
+                <button
+                  data-testid="format-wipe-btn"
+                  onClick={() => setConfirm('wipe')}
+                  className="w-full py-2 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
+                >
+                  <span className="material-symbols-outlined text-[18px] text-[#dc2626]">warning</span>
+                  <span className="flex flex-col items-start leading-tight">
+                    <span>Wipe {datasetLabel(currentDs)}</span>
+                    <span className="text-white/60 font-normal text-[12px]">Wipe this Index × Year only</span>
+                  </span>
+                </button>
+                <button
+                  data-testid="format-delete-btn"
+                  onClick={() => setConfirm('delete')}
+                  className="w-full py-2 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
+                >
+                  <span className="material-symbols-outlined text-[18px] text-[#dc2626]">warning</span>
+                  <span className="flex flex-col items-start leading-tight">
+                    <span>Delete {currentDs.index} — all years</span>
+                    <span className="text-white/60 font-normal text-[12px]">Delete this index with all its data</span>
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         )}
