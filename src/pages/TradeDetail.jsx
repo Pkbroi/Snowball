@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo, lazy, Suspense } from 'react';
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
@@ -118,13 +118,25 @@ export default function TradeDetail() {
   // Apply smooth scrolling to the window for this page
   const lenisRef = useLenis();
 
-  // Resolve trade data — prefer router state, fall back to lookup
-  const trade = state ?? (() => {
+  // Resolve trade data — prefer router state, fall back to a rebuild
+  // from storage (bug 5): a reload or deep link has no router state,
+  // and the old stub getTradeById returned null, so the page showed
+  // "Trade not found". Memoised so the trade's identity is stable
+  // across renders — effects that depend on `trade` must not re-run
+  // (and clobber in-progress edits) on every render.
+  const trade = useMemo(() => {
+    if (state) return state;
     const t = getTradeById(id);
     if (!t) return null;
-    const day = t.days.find((d) => d.outcome) ?? t.days[0];
+    // Day pick: the last-visited day in this tab first (the user was
+    // looking at it when they reloaded), then the first day with any
+    // content, then Monday.
+    const lastDay = sessionStorage.getItem('sb_last_day');
+    const day = t.days.find((d) => d.day === lastDay)
+      ?? t.days.find((d) => d.hasContent)
+      ?? t.days[0];
     return { weekId: t.id, weekStart: t.weekStart, weekEnd: t.weekEnd, remarks: t.remarks, day };
-  })();
+  }, [state, id]);
 
   const handleBack = () => {
     sessionStorage.setItem('sb_last_week_id', weekId);
@@ -309,6 +321,16 @@ export default function TradeDetail() {
   // jank. The full original is only decoded for the lightbox.
   const [mediumImg, setMediumImg] = useState(null);
   const [mediumLoaded, setMediumLoaded] = useState(false);
+  // Whether any image tier is in hand. The chart container, the
+  // Original badge and the double-click-to-expand gate must use this,
+  // not chartImg alone: on a reload or deep link (bug 5) there is no
+  // preloaded image, so chartImg starts null and the chart only
+  // appears once the medium/full tiers land — gating on chartImg
+  // alone left the page showing the empty dropzone for a day that
+  // has a chart, even with the image cached and the meta loaded.
+  // (Declared here, after all three tier states, so none of them is
+  // read before its initialization.)
+  const hasChart = Boolean(chartImg || mediumImg || fullImg);
   const [imgMeta, setImgMeta] = useState(() => getImageMeta(weekId, dayName));
   const [tags, setTagsState] = useState(() => getTags(weekId, dayName));
   const [tagInput, setTagInput] = useState('');
@@ -849,7 +871,7 @@ export default function TradeDetail() {
 
   /* ── Main chart double-click ── */
   const handleChartDoubleClick = () => {
-    if (chartImg) setExpanded(true);
+    if (hasChart) setExpanded(true);
     else fileInputRef.current?.click();
   };
 
@@ -1320,7 +1342,7 @@ export default function TradeDetail() {
 
         {/* ── Main chart ── */}
         <section className="w-full">
-          {chartImg ? (
+          {hasChart ? (
             /* Image present: show with delete button, double-click expands */
             <div
               ref={inlineContainerRef}
@@ -1366,7 +1388,7 @@ export default function TradeDetail() {
                   chart, so they stay visible on the notes page. Not
                   interactive: open the fullscreen chart to move, edit or
                   delete a mark. */}
-              {chartImg && inlinePicRect && annotations.length > 0 && (
+              {hasChart && inlinePicRect && annotations.length > 0 && (
                 <div
                   data-testid="inline-ann-overlay"
                   className="absolute z-[5] pointer-events-none"
@@ -1462,7 +1484,7 @@ export default function TradeDetail() {
         </section>
 
         {/* Original-image badge: proves the stored file was not downscaled */}
-        {imgMeta && imgMeta.width && chartImg && (
+        {imgMeta && imgMeta.width && hasChart && (
           <div className="flex justify-end" data-testid="original-badge">
             <span className="text-[11px] font-label-md text-on-surface-variant/70 tabular-nums">
               Original · {imgMeta.width} × {imgMeta.height}
