@@ -145,9 +145,12 @@ img { -webkit-user-drag: none; user-drag: none; }
 
 
 /* ─── Material Symbols, bundled locally: icons work offline ───
-   The .woff2 is decoded from material-symbols-outlined.woff2.b64 by
-   scripts/decode-font.cjs (prebuild/dev); the repo stores the base64
-   text because the GitHub push path only accepts UTF-8 files. ─── */
+   The .woff2 is decoded from material-symbols-outlined.subset.woff2.b64
+   by scripts/decode-font.cjs (prebuild/dev); the subset holds only the
+   22 icons the app uses (5.8KB, produced by `node scripts/subset-font.cjs`
+   from the full 1.1MB font, which stays in .b64 as the source of truth).
+   The repo stores base64 text because the GitHub push path only accepts
+   UTF-8 files. ─── */
 @font-face {
   font-family: 'Material Symbols Outlined';
   font-style: normal;
