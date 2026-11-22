@@ -397,6 +397,67 @@ describe('Import validation (bug fix: corrupt backup must not wipe the database)
   });
 });
 
+describe('Awaited deletes/sets (bug fix: no fire-and-forget resurrection)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const imgKeys = (keys, weekId, dayName) =>
+    keys.filter((k) => typeof k === 'string' && k.includes(`${weekId}_${dayName}`) &&
+      (k.includes('__img_') || k.includes('__thumb_') || k.includes('__med_')));
+
+  it('setStoredImg delete removes the image keys before it resolves', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await storage.setStoredImg('week-1', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+    expect(imgKeys(await keys(), 'week-1', 'Monday').length).toBeGreaterThan(0);
+    await storage.setStoredImg('week-1', 'Monday', 'DELETED');
+    // Immediately after the awaited delete resolves, the keys must be gone
+    // from IndexedDB — with the old fire-and-forget dels they were still there.
+    expect(imgKeys(await keys(), 'week-1', 'Monday')).toEqual([]);
+  });
+
+  it('clearStoredImg removes the image keys before it resolves', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await storage.setStoredImg('week-1', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+    await storage.clearStoredImg('week-1', 'Monday');
+    expect(imgKeys(await keys(), 'week-1', 'Monday')).toEqual([]);
+  });
+
+  it('deleteWeekData removes every key before it resolves', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    storage.setNotes('week-del', 'Monday', '<p>to delete</p>');
+    storage.setTags('week-del', 'Monday', ['Gone']);
+    await storage.flushAllWeekDocs();
+    expect(await keys()).toContain('sb_ds_nifty-50_2026__wk_week-del');
+    await storage.deleteWeekData('week-del');
+    const remaining = (await keys()).filter((k) => typeof k === 'string' && k.includes('week-del'));
+    expect(remaining).toEqual([]);
+  });
+
+  it('setAnnotations persists and deletes before it resolves', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    await storage.setAnnotations('week-1', 'Monday', [{ id: 'a1', type: 'line', x: 10, y: 20 }]);
+    expect(await keys()).toContain('sb_ds_nifty-50_2026__ann_week-1_Monday');
+    await storage.setAnnotations('week-1', 'Monday', []);
+    expect(await keys()).not.toContain('sb_ds_nifty-50_2026__ann_week-1_Monday');
+  });
+
+  it('setExtraWeeks persists before it resolves', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    await storage.setExtraWeeks([{ id: 'week-x', days: [] }]);
+    expect(await get('sb_ds_nifty-50_2026__extra_weeks')).toEqual([{ id: 'week-x', days: [] }]);
+  });
+});
+
 describe('Week documents — per-week metadata (perf step 4)', () => {
   beforeEach(async () => {
     await clear();

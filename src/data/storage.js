@@ -979,9 +979,9 @@ export const setStoredImg = async (weekId, dayName, val) => {
     thumbKnown.delete(kThumb); // round-2 improvement 4
     cancelThumbEviction(weekId, dayName);
     scheduleWeekSave(weekId); // image meta lives in the week document now
-    del(kImg);
-    del(kThumb);
-    del(kMed);
+    // Awaited: the old fire-and-forget dels could still be in flight when
+    // the user reloaded, resurrecting the deleted chart.
+    await Promise.all([del(kImg), del(kThumb), del(kMed)]);
     return null;
   }
 
@@ -1107,7 +1107,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
   return displayUrl;
 };
 
-export const clearStoredImg = (weekId, dayName) => {
+export const clearStoredImg = async (weekId, dayName) => {
   revokeBlobUrl(memCache.get(imgKey(weekId, dayName)));
   revokeThumbUrl(weekId, dayName);
   revokeBlobUrl(memCache.get(medKey(weekId, dayName)));
@@ -1118,9 +1118,14 @@ export const clearStoredImg = (weekId, dayName) => {
   thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
   cancelThumbEviction(weekId, dayName);
   scheduleWeekSave(weekId); // image meta lives in the week document now
-  del(imgKey(weekId, dayName));
-  del(thumbKey(weekId, dayName));
-  del(medKey(weekId, dayName));
+  // Awaited, same as setStoredImg's delete path: a reload must not be
+  // able to resurrect the deleted chart. (No callers right now — the
+  // chart delete goes through setStoredImg — but the export stays safe.)
+  await Promise.all([
+    del(imgKey(weekId, dayName)),
+    del(thumbKey(weekId, dayName)),
+    del(medKey(weekId, dayName)),
+  ]);
 };
 
 export const resolveImg = (weekId, dayName, staticImg) => {
@@ -1212,48 +1217,56 @@ export const setWeekLabel = (weekId, obj) => {
 
 /* ─── User-added extra weeks ─── */
 export const getExtraWeeks = () => memCache.get(extraWeeksKey()) ?? [];
-export const setExtraWeeks = (weeks) => {
+export const setExtraWeeks = async (weeks) => {
   memCache.set(extraWeeksKey(), weeks);
-  set(extraWeeksKey(), weeks);
+  // Awaited: adding a week then reloading in the same instant used to
+  // lose the new week — the set was still in flight.
+  await set(extraWeeksKey(), weeks);
 };
 
-export const deleteWeekData = (weekId) => {
+export const deleteWeekData = async (weekId) => {
   // Mark the week dead FIRST: a save queued by an earlier edit must not
   // resurrect the document after this delete (and any in-flight write
   // loses to this del by IndexedDB transaction order).
   weekSaveDead.add(weekId);
   bumpSearchDataVersion(); // the week's searchable text is gone (round-2 improvement 2)
-  del(wkKey(weekId));
+  // Every delete is collected and awaited: the old fire-and-forget dels
+  // could still be in flight when the user reloaded, resurrecting the
+  // deleted week. The memCache deletes above stay synchronous, so the UI
+  // updates instantly; only the IndexedDB confirmation is awaited.
+  const dels = [];
+  dels.push(del(wkKey(weekId)));
   // Clear week label and remarks (the per-key dels also cover a week
   // whose migration failed and still has old-format keys).
   memCache.delete(wlblKey(weekId));
-  del(wlblKey(weekId));
+  dels.push(del(wlblKey(weekId)));
   memCache.delete(remKey(weekId));
-  del(remKey(weekId));
+  dels.push(del(remKey(weekId)));
 
   // Clear day notes, images, and tags
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   days.forEach(dayName => {
     memCache.delete(notesKey(weekId, dayName));
-    del(notesKey(weekId, dayName));
+    dels.push(del(notesKey(weekId, dayName)));
     memCache.delete(imgKey(weekId, dayName));
-    del(imgKey(weekId, dayName));
+    dels.push(del(imgKey(weekId, dayName)));
     revokeThumbUrl(weekId, dayName);
     memCache.delete(thumbKey(weekId, dayName));
-    del(thumbKey(weekId, dayName));
+    dels.push(del(thumbKey(weekId, dayName)));
     thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
     cancelThumbEviction(weekId, dayName);
     memCache.delete(medKey(weekId, dayName));
-    del(medKey(weekId, dayName));
+    dels.push(del(medKey(weekId, dayName)));
     memCache.delete(metaKey(weekId, dayName));
-    del(metaKey(weekId, dayName));
+    dels.push(del(metaKey(weekId, dayName)));
     memCache.delete(tagsKey(weekId, dayName));
-    del(tagsKey(weekId, dayName));
+    dels.push(del(tagsKey(weekId, dayName)));
     memCache.delete(annKey(weekId, dayName));
-    del(annKey(weekId, dayName));
+    dels.push(del(annKey(weekId, dayName)));
     memCache.delete(dateKey(weekId, dayName));
-    del(dateKey(weekId, dayName));
+    dels.push(del(dateKey(weekId, dayName)));
   });
+  await Promise.all(dels);
 };
 
 /* ─── Cell day notes (stored as HTML string) ─── */
@@ -1293,13 +1306,15 @@ export const setTags = (weekId, dayName, tags) => {
    so backup/export picks the key up automatically (sb_ds_ prefix). */
 const annKey = (weekId, dayName) => `${dsPrefix()}ann_${weekId}_${dayName}`;
 export const getAnnotations = (weekId, dayName) => memCache.get(annKey(weekId, dayName)) ?? [];
-export const setAnnotations = (weekId, dayName, anns) => {
+export const setAnnotations = async (weekId, dayName, anns) => {
   if (anns && anns.length > 0) {
     memCache.set(annKey(weekId, dayName), anns);
-    set(annKey(weekId, dayName), anns);
+    // Awaited: a mark placed then a reload in the same instant used to
+    // lose the mark — the set was still in flight.
+    await set(annKey(weekId, dayName), anns);
   } else {
     memCache.delete(annKey(weekId, dayName));
-    del(annKey(weekId, dayName));
+    await del(annKey(weekId, dayName));
   }
 };
 

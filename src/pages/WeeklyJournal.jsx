@@ -1243,7 +1243,7 @@ export default function WeeklyJournal() {
   const zoomOut = useCallback(() => { captureZoomScroll(); setTableZoom(z => Math.max(0.5, parseFloat((z - 0.1).toFixed(1)))); }, [captureZoomScroll]);
 
   /* ── Add new row ── */
-  const addRow = useCallback(() => {
+  const addRow = useCallback(async () => {
     const weekId  = `week-custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; // random suffix: two rapid clicks must never share an id
     const newWeek = {
       id: weekId,
@@ -1257,8 +1257,12 @@ export default function WeeklyJournal() {
     };
 
     const extras = [...getExtraWeeks(), newWeek];
-    setExtraWeeks(extras);
+    // Start the IndexedDB write, update the UI instantly, then await the
+    // write — adding a week then reloading in the same instant used to
+    // lose the new week.
+    const saved = setExtraWeeks(extras);
     setAllTrades([...trades, ...extras]);
+    await saved;
 
     // Scroll the new row into view
     setTimeout(() => {
@@ -1267,12 +1271,16 @@ export default function WeeklyJournal() {
   }, []);
 
   /* ── Delete row ── */
-  const deleteRow = useCallback((weekId) => {
+  const deleteRow = useCallback(async (weekId) => {
     if (window.confirm('Are you sure you want to delete this custom week? All associated notes and remarks will be permanently deleted.')) {
       const extras = getExtraWeeks().filter(w => w.id !== weekId);
-      setExtraWeeks(extras);
-      deleteWeekData(weekId);
+      // Start both IndexedDB writes, update the UI instantly, then await
+      // them — deleting a week then reloading in the same instant used to
+      // resurrect it.
+      const saved = setExtraWeeks(extras);
+      const removed = deleteWeekData(weekId);
       setAllTrades([...trades, ...extras]);
+      await Promise.all([saved, removed]);
     }
   }, []);
 

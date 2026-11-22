@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect, lazy, Suspense } from 'react'
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs } from '../data/storage.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
 // (perf step 8) — see the mount logic in TradeDetail below. TradeDetail
@@ -361,9 +361,12 @@ export default function TradeDetail() {
   // clicks in the same gesture (the follow-up click lands <50ms later).
   const justPlacedRef = useRef(0);
 
-  const persistAnnotations = useCallback((next) => {
+  const persistAnnotations = useCallback(async (next) => {
     setAnnotationsState(next);
-    setAnnotations(weekId, dayName, next);
+    // Awaited: a mark placed then a reload in the same instant used to
+    // lose the mark. This fires once per gesture (place / drag end /
+    // resize end / delete), never per pointermove, so awaiting is cheap.
+    await setAnnotations(weekId, dayName, next);
   }, [weekId, dayName]);
 
   // Displayed picture rect (viewport px): the lightbox image is
@@ -822,14 +825,19 @@ export default function TradeDetail() {
   }, [weekId, dayName, triggerSaveIndicator]);
 
   /* ── Delete main chart ── */
-  const deleteChart = useCallback(() => {
-    setStoredImg(weekId, dayName, 'DELETED');
+  const deleteChart = useCallback(async () => {
+    // UI updates first so the chart disappears instantly; the storage
+    // delete is awaited afterwards, and the pending week-document save
+    // (which drops the image meta) is flushed too — a reload in the same
+    // instant must not resurrect the chart or its metadata.
     setChartImg(null);
     setFullImg(null);
     setFullLoaded(false);
     setMediumImg(null);
     setMediumLoaded(false);
     setImgMeta(null);
+    await setStoredImg(weekId, dayName, 'DELETED');
+    await flushAllWeekDocs();
   }, [weekId, dayName]);
 
   /* ── Main chart file input ── */
