@@ -327,13 +327,13 @@ const getImageWorker = () => {
   try {
     imageWorker = new Worker(new URL('../workers/imageWorker.js', import.meta.url), { type: 'module' });
     imageWorker.onmessage = (e) => {
-      const { id, blob, error } = e.data || {};
-      const entry = workerPending.get(id);
+      const data = e.data || {};
+      const entry = workerPending.get(data.id);
       if (!entry) return;
-      workerPending.delete(id);
+      workerPending.delete(data.id);
       clearTimeout(entry.timer);
-      if (error || !blob) entry.reject(new Error(error || 'worker failed'));
-      else entry.resolve(blob);
+      if (data.error) entry.reject(new Error(data.error));
+      else entry.resolve(data);
     };
     imageWorker.onerror = () => {
       // Fail every pending call so callers fall back to the main thread.
@@ -347,7 +347,9 @@ const getImageWorker = () => {
   }
 };
 
-const generateDerivativeInWorker = (blob, maxDim, quality) => new Promise((resolve, reject) => {
+/** One worker round trip, returning the worker's raw reply object.
+ *  Shared by the single-derivative and derive-all calls below. */
+const callWorker = (payload) => new Promise((resolve, reject) => {
   const worker = getImageWorker();
   if (!worker) { reject(new Error('no worker')); return; }
   const id = ++workerSeq;
@@ -357,13 +359,47 @@ const generateDerivativeInWorker = (blob, maxDim, quality) => new Promise((resol
   }, 10000);
   workerPending.set(id, { resolve, reject, timer });
   try {
-    worker.postMessage({ id, blob, maxDim, quality });
+    worker.postMessage({ id, ...payload });
   } catch (err) {
     workerPending.delete(id);
     clearTimeout(timer);
     reject(err);
   }
 });
+
+const generateDerivativeInWorker = async (blob, maxDim, quality) => {
+  const data = await callWorker({ blob, maxDim, quality });
+  if (!data.blob) throw new Error('worker failed');
+  return data.blob;
+};
+
+/** One worker pass, one decode: thumbnail + medium + dimensions.
+ *  Returns null when the worker is unavailable or fails — the caller
+ *  falls back to the old three-decode path. `blob` must be a Blob. */
+const generateAllInWorker = async (blob) => {
+  const data = await callWorker({ blob, deriveAll: true });
+  if (!data.thumb || !data.medium) throw new Error('worker failed');
+  return { thumb: data.thumb, medium: data.medium, width: data.width, height: data.height };
+};
+
+/**
+ * One decode, three outputs: 480px thumbnail, 1600px medium, and the
+ * original dimensions, all from a single worker pass. Returns null when
+ * the worker is unavailable or fails (jsdom tests, worker error) — the
+ * caller falls back to the old path (getImageDimensions + createThumbnail
+ * + createMedium, three separate decodes). Same outputs as the old path:
+ * 480px WebP q0.8 thumb, 1600px WebP q0.85 medium, original dims.
+ */
+export const createAllDerivatives = async (blob) => {
+  if (!(blob instanceof Blob)) return null;
+  try {
+    const { thumb, medium, width, height } = await generateAllInWorker(blob);
+    if (!(thumb instanceof Blob) || !(medium instanceof Blob)) return null;
+    return { thumb, medium, width, height };
+  } catch {
+    return null;
+  }
+};
 
 /** Dimensions of a Blob without decoding the whole image into the DOM. */
 export const getImageDimensions = async (blob) => {
@@ -778,48 +814,93 @@ export const setStoredImg = async (weekId, dayName, val) => {
   // silently losing the upload.
   await set(kImg, blob);
 
-  // Record original metadata (dimensions / size / type) at upload time so
-  // the UI can reserve layout and show "Original · 2560×1440 · 4.2 MB"
-  // without decoding the image first. This is metadata about the original
-  // only — it never changes the pixels.
+  // One decode, three outputs: thumbnail + medium + dimensions from a
+  // single worker pass (perf step 5). Previously this was three separate
+  // decodes — getImageDimensions, then createThumbnail, then createMedium.
+  // If the worker is unavailable or fails, fall back to that old path.
+  let all = null;
   try {
-    const dims = await getImageDimensions(blob);
+    all = await createAllDerivatives(blob);
+  } catch {
+    all = null;
+  }
+  if (all) {
+    // Original metadata (dimensions / size / type) so the UI can reserve
+    // layout and show "Original · 2560×1440 · 4.2 MB" without decoding
+    // the image first. Metadata about the original only — it never
+    // changes the pixels.
     const meta = {
-      width: dims?.width ?? null,
-      height: dims?.height ?? null,
+      width: all.width ?? null,
+      height: all.height ?? null,
       size: blob.size,
       type: blob.type,
       name: val instanceof File ? val.name : null,
     };
     memCache.set(kMeta, meta);
     scheduleWeekSave(weekId); // image meta lives in the week document now
-  } catch {
-    // metadata is best-effort; the image itself is already saved
-  }
 
-  // Create and save optimised thumbnail for the grid ONLY.
-  try {
-    const thumb = await createThumbnail(blob);
-    if (thumb && thumb instanceof Blob) {
-      const thumbUrl = URL.createObjectURL(thumb);
+    // Thumbnail for the grid ONLY (awaited, as before).
+    try {
+      const thumbUrl = URL.createObjectURL(all.thumb);
       memCache.set(kThumb, thumbUrl);
-      await set(kThumb, thumb);
+      await set(kThumb, all.thumb);
+    } catch (e) {
+      console.warn('Could not generate thumbnail:', e);
     }
-  } catch (e) {
-    console.warn('Could not generate thumbnail:', e);
-  }
 
-  // Medium tier (1600px, detail page) — generated in the background via
-  // the worker so the upload itself returns immediately. The detail page
-  // falls back to the full image until it lands, and generates it on
-  // demand if it is still missing.
-  createMedium(blob).then((mBlob) => {
-    if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
-      const url = URL.createObjectURL(mBlob);
+    // Medium tier (1600px, detail page) — stored in the background, as
+    // before; the detail page falls back to the full image until it
+    // lands, and generates it on demand if it is still missing.
+    if (all.medium !== blob) {
+      const url = URL.createObjectURL(all.medium);
       memCache.set(kMed, url);
-      set(kMed, mBlob).catch(() => {});
+      set(kMed, all.medium).catch(() => {});
     }
-  }).catch(() => {});
+  } else {
+    // Fallback path — the old three-decode sequence, unchanged.
+    // Record original metadata (dimensions / size / type) at upload time
+    // so the UI can reserve layout and show "Original · 2560×1440 ·
+    // 4.2 MB" without decoding the image first. This is metadata about
+    // the original only — it never changes the pixels.
+    try {
+      const dims = await getImageDimensions(blob);
+      const meta = {
+        width: dims?.width ?? null,
+        height: dims?.height ?? null,
+        size: blob.size,
+        type: blob.type,
+        name: val instanceof File ? val.name : null,
+      };
+      memCache.set(kMeta, meta);
+      scheduleWeekSave(weekId); // image meta lives in the week document now
+    } catch {
+      // metadata is best-effort; the image itself is already saved
+    }
+
+    // Create and save optimised thumbnail for the grid ONLY.
+    try {
+      const thumb = await createThumbnail(blob);
+      if (thumb && thumb instanceof Blob) {
+        const thumbUrl = URL.createObjectURL(thumb);
+        memCache.set(kThumb, thumbUrl);
+        await set(kThumb, thumb);
+      }
+    } catch (e) {
+      console.warn('Could not generate thumbnail:', e);
+    }
+
+    // Medium tier (1600px, detail page) — generated in the background via
+    // the worker so the upload itself returns immediately. The detail page
+    // falls back to the full image until it lands, and generates it on
+    // demand if it is still missing.
+    createMedium(blob).then((mBlob) => {
+      if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
+        const url = URL.createObjectURL(mBlob);
+        memCache.set(kMed, url);
+        set(kMed, mBlob).catch(() => {});
+      }
+    }).catch(() => {});
+  }
 
   return displayUrl;
 };

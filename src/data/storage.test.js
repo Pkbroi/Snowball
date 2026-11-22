@@ -111,6 +111,20 @@ describe('Storage utility (Three-tier images + metadata)', () => {
     await expect(createMedium(blob)).resolves.toBe(blob);
   });
 
+  it('createAllDerivatives returns null without a worker (jsdom) — the upload falls back to the old path', async () => {
+    const storage = await import('./storage');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await expect(storage.createAllDerivatives(new Blob([bytes], { type: 'image/png' }))).resolves.toBeNull();
+    // Fallback path (getImageDimensions + createThumbnail + createMedium)
+    // still records metadata and a thumbnail in jsdom.
+    await storage.setStoredImg('week-f', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+    const meta = storage.getImageMeta('week-f', 'Monday');
+    expect(meta).toBeTruthy();
+    expect(meta.size).toBe(bytes.length);
+    expect(meta.type).toBe('image/png');
+    expect(storage.getStoredThumb('week-f', 'Monday')).toBeTruthy();
+  });
+
   it('setStoredImg records original metadata (size/type/name) and clears it on delete', async () => {
     const storage = await import('./storage');
     const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
