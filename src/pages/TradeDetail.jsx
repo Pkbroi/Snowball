@@ -1326,8 +1326,17 @@ export default function TradeDetail() {
               ref={inlineContainerRef}
               className="w-full rounded-lg overflow-hidden border border-outline-variant aspect-[1916/1000] bg-surface-container-lowest relative cursor-crosshair group"
               data-testid="chart-image-container"
+              tabIndex={0}
               onDoubleClick={handleChartDoubleClick}
-              title="Double-click to expand"
+              // Bug 3: this container used to have no drop/paste handlers,
+              // so dropping a file onto the existing chart navigated the
+              // whole app away to the raw image. Same handlers as the
+              // empty dropzone — the drop replaces the chart.
+              onDragOver={(e) => { e.preventDefault(); setChartDragging(true); }}
+              onDragLeave={() => setChartDragging(false)}
+              onDrop={handleChartDrop}
+              onPaste={handleChartPaste}
+              title="Double-click to expand · drag/drop or paste an image to replace"
               onMouseMove={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const x = e.clientX - rect.left;
@@ -1406,6 +1415,12 @@ export default function TradeDetail() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {chartDragging && (
+                <div className="absolute inset-0 z-30 pointer-events-none flex flex-col items-center justify-center gap-2 bg-black/60">
+                  <span className="material-symbols-outlined text-[48px] text-white">file_upload</span>
+                  <p className="font-body-md text-body-md text-white text-center">Drop to replace</p>
                 </div>
               )}
               <button

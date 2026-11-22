@@ -250,12 +250,23 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   if (cellImg) {
     return (
       <div
-        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
+        ref={cellRef}
+        tabIndex={0}
+        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        title="Double-click to open detail"
+        // Bug 3: the image branch used to have no drop/paste handlers, so
+        // dropping a file onto a cell that already had a chart navigated
+        // the whole app away to the raw image. Same handlers as the empty
+        // branch — the drop replaces the chart (saveFile overwrites it).
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+        onPaste={handlePaste}
+        onClick={() => cellRef.current?.focus()}
+        title="Double-click to open detail · drag/drop or paste an image to replace"
       >
         <div className="absolute inset-[calc(4px*var(--tz))] border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
           <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
@@ -264,6 +275,12 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
             className={`w-full h-full object-cover transition-opacity duration-300 hover:opacity-100 ${imgLoaded ? 'opacity-90' : 'opacity-0'}`} />
           <OutcomeBadge outcome={day.outcome} />
         </div>
+        {dragging && (
+          <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] bg-black/60">
+            <span className="material-symbols-outlined text-[calc(20px*var(--tz))] text-white">file_upload</span>
+            <span className="font-label-md text-[calc(9px*var(--tz))] uppercase tracking-wide text-white">Drop to replace</span>
+          </div>
+        )}
       </div>
     );
   }

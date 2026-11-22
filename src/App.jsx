@@ -17,6 +17,24 @@ export default function App() {
     initStorage().then(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    // Bug 3 safety net: a file dropped anywhere no cell or dropzone
+    // handles (header, remarks column, gaps between elements) used to
+    // navigate the whole app away to the raw image, leaving it unusable
+    // until restart. Preventing the default on dragover + drop at window
+    // level stops that navigation. It does not stopPropagation, so cells
+    // and dropzones with their own handlers still receive the drop
+    // first (their React handlers run before this window listener in
+    // the bubble phase) and handle it themselves.
+    const prevent = (e) => e.preventDefault();
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-black">
