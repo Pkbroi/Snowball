@@ -62,10 +62,17 @@ export const subscribeThumbs = (cb) => {
   thumbListeners.add(cb);
   return () => { thumbListeners.delete(cb); };
 };
-const notifyThumbs = () => {
+const notifyThumbs = (weekIds) => {
   for (const cb of thumbListeners) {
-    try { cb(); } catch { /* a listener must never break the load */ }
+    try { cb(weekIds); } catch { /* a listener must never break the load */ }
   }
+};
+
+// Inverse of imgKey/thumbKey/medKey: the day name (Monday..Friday) is
+// the last `_`-segment of the key, and week ids never contain `_`.
+const weekIdFromImageKey = (key, tier) => {
+  const rest = key.slice(`${dsPrefix()}${tier}_`.length);
+  return rest.slice(0, rest.lastIndexOf('_'));
 };
 let thumbGeneration = 0;
 
@@ -682,7 +689,9 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
     }));
     if (generation !== thumbGeneration) return;
     if (onProgress) onProgress(Math.min(i + 8, thumbKeys.length), thumbKeys.length);
-    notifyThumbs();
+    // Notify per week, not globally (round-2 improvement 1): only the
+    // rows whose thumbs just arrived re-render.
+    notifyThumbs([...new Set(thumbKeys.slice(i, i + 8).map((k) => weekIdFromImageKey(k, 'thumb')))]);
   }
 
   // Backfill missing thumbnails IN THE BACKGROUND, after first paint.
@@ -736,8 +745,8 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
         // This image's thumbnail (or its full-image fallback) is now in
         // the cache — tell the grid so the cell paints it. Without this
         // the backfilled thumbs would sit in memCache unseen until some
-        // unrelated re-render.
-        notifyThumbs();
+        // unrelated re-render. Notified per week (round-2 improvement 1).
+        notifyThumbs([weekIdFromImageKey(key, 'img')]);
       }, 4).catch(() => {});
     };
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {

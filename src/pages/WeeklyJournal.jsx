@@ -127,8 +127,9 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   const [dragging, setDragging] = useState(false);
   const cellRef = useRef(null);
 
-  // Sync if stored thumbnail or day image changes — or when a batch of
-  // thumbnails streams in (thumbsVersion bumps, perf step 6).
+  // Sync if stored thumbnail or day image changes — or when this week's
+  // thumbnails stream in (its per-week thumbsVersion bumps, round-2
+  // improvement 1); other weeks' arrivals don't touch this cell.
   useEffect(() => {
     const current = getStoredThumb(weekId, day.day) || day.img || null;
     setCellImg(current);
@@ -954,11 +955,18 @@ export default function WeeklyJournal() {
   // counter was passed to every row, so closing any modal recomputed
   // every row's preview.
   const [remarksVersions, setRemarksVersions] = useState({});
-  // Bumped when a batch of thumbnails streams in (perf step 6), so the
-  // memoised rows re-read getStoredThumb and cells fill in as their
-  // thumbnails arrive — same pattern as remarksVersion.
-  const [thumbsVersion, setThumbsVersion] = useState(0);
-  useEffect(() => subscribeThumbs(() => setThumbsVersion((v) => v + 1)), []);
+  // Per-week versions (round-2 improvement 1): bumped for ONE week when
+  // its thumbnails stream in, so only that memoised row re-reads
+  // getStoredThumb and its cells fill in as their thumbnails arrive.
+  // Previously a single global counter was passed to every row, so each
+  // thumb batch re-rendered the whole grid. Same pattern as
+  // remarksVersions.
+  const [thumbsVersions, setThumbsVersions] = useState({});
+  useEffect(() => subscribeThumbs((weekIds) => setThumbsVersions((prev) => {
+    const next = { ...prev };
+    for (const w of weekIds ?? []) next[w] = (next[w] ?? 0) + 1;
+    return next;
+  })), []);
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
   const [datasets, setDatasets] = useState(() => getDatasets());
@@ -1608,7 +1616,7 @@ export default function WeeklyJournal() {
                               gridCols={gridTemplateColumns}
                               searchHits={searchHits}
                               remarksVersion={remarksVersions[trade.id] ?? 0}
-                              thumbsVersion={thumbsVersion}
+                              thumbsVersion={thumbsVersions[trade.id] ?? 0}
                             />
                           )}
                         />

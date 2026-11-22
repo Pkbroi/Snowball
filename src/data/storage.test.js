@@ -541,6 +541,23 @@ describe('Thumbnail streaming — paint before thumbnails (perf step 6)', () => 
     expect(notifications).toBeGreaterThanOrEqual(1);
   });
 
+  it('loadThumbnails notifies per week (round-2 improvement 1)', async () => {
+    const storage = await import('./storage');
+    const { set } = await import('idb-keyval');
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+    await set('sb_ds_nifty-50_2026__thumb_week-1_Monday', blob);
+    await set('sb_ds_nifty-50_2026__thumb_week-2_Monday', blob);
+
+    const notified = [];
+    const unsubscribe = storage.subscribeThumbs((weekIds) => { notified.push([...(weekIds ?? [])]); });
+    await storage.loadThumbnails();
+    unsubscribe();
+
+    // One batch (2 keys), one notification naming exactly the weeks in it.
+    expect(notified).toHaveLength(1);
+    expect(notified[0].sort()).toEqual(['week-1', 'week-2']);
+  });
+
   it('unsubscribe stops notifications', async () => {
     const storage = await import('./storage');
     const { set } = await import('idb-keyval');
