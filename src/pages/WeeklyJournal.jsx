@@ -10,7 +10,8 @@ import {
   getExtraWeeks, setExtraWeeks, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
-  subscribeThumbs, resolveMediumAsync, getSearchIndex
+  subscribeThumbs, resolveMediumAsync, getSearchIndex,
+  hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction
 } from '../data/storage.js';
 
 
@@ -133,17 +134,33 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   useEffect(() => {
     const current = getStoredThumb(weekId, day.day) || day.img || null;
     setCellImg(current);
+    // Round-2 improvement 4: if this cell's thumb was evicted while it
+    // was off-screen, reload it from IndexedDB. The trigger is "thumb
+    // Blob missing but known to exist" — not "no image at all" — because
+    // the full-image fallback above must never become the grid's image:
+    // decoding full-res charts is what made scrolling janky.
+    if (hasStoredThumb(weekId, day.day) && !hasThumbBlob(weekId, day.day)) {
+      loadThumb(weekId, day.day).catch(() => {});
+    }
   }, [weekId, day.day, day.img, thumbsVersion]);
 
-  // Lazy thumbnail URLs (perf step 7): when this row scrolls out of
-  // view Virtuoso unmounts it — drop its object URL so off-screen
-  // thumbnails don't stay in memory. The blob stays cached, so the URL
-  // is re-created on the next mount. Skipped while the detail page is
-  // open: goToDetail may have handed this very URL to the detail page
-  // as its image fallback, and revoking it would blank that image.
-  // (HashRouter keeps the route in location.hash: '#/trade/…'.)
-  useEffect(() => () => {
-    if (!window.location.hash.startsWith('#/trade/')) revokeThumbUrl(weekId, day.day);
+  // Lazy thumbnail URLs (perf step 7) + off-screen eviction (round-2
+  // improvement 4): when this row scrolls out of view Virtuoso unmounts
+  // it — drop its object URL so off-screen thumbnails don't stay in
+  // memory, and schedule its Blob for eviction after a 30 s grace
+  // period. A remount (zoom change, quick scroll-back) cancels the
+  // pending eviction, so the image stays instant. Skipped while the
+  // detail page is open: goToDetail may have handed this very URL to
+  // the detail page as its image fallback, and revoking it would blank
+  // that image. (HashRouter keeps the route in location.hash: '#/trade/…'.)
+  useEffect(() => {
+    cancelThumbEviction(weekId, day.day);
+    return () => {
+      if (!window.location.hash.startsWith('#/trade/')) {
+        revokeThumbUrl(weekId, day.day);
+        scheduleThumbEviction(weekId, day.day);
+      }
+    };
   }, [weekId, day.day]);
 
   // Hover-intent preload (perf step 9): the detail page shows the 1600px

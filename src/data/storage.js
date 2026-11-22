@@ -50,6 +50,71 @@ const revokeAllThumbUrls = () => {
   thumbUrlCache.clear();
 };
 
+/* ─── Off-screen thumbnail eviction (round-2 improvement 4) ───
+ * memCache holds every thumb Blob forever, so a long journal's thumbs
+ * accumulate (~25 KB each) and never come back. When a DayCell unmounts
+ * (its row scrolled out of view) its thumb Blob is dropped from
+ * memCache after a 30 s grace period — the IndexedDB copy stays, and a
+ * remount reloads it. The grace period matters: Virtuoso remounts the
+ * whole list on a zoom change and a quick scroll-back remounts within a
+ * second, so evicting instantly would make every zoom / scroll-back
+ * re-read all its thumbs from IndexedDB and flicker. A remount cancels
+ * the pending eviction. `thumbKnown` records which cells have a thumb
+ * in IndexedDB, so a remounted cell knows whether a missing Blob means
+ * "evicted, reload it" or "never had one". */
+const thumbKnown = new Set(); // thumbKey strings with a thumb Blob in IndexedDB
+const thumbEvictTimers = new Map(); // thumbKey -> timeout id
+const THUMB_EVICT_DELAY_MS = 30000;
+/** Does IndexedDB hold a thumb Blob for this cell? */
+export const hasStoredThumb = (weekId, dayName) => thumbKnown.has(thumbKey(weekId, dayName));
+/** Is this cell's thumb Blob currently in memCache? */
+export const hasThumbBlob = (weekId, dayName) => memCache.get(thumbKey(weekId, dayName)) instanceof Blob;
+/** Drop a cell's thumb Blob from memCache after the grace period. */
+export const scheduleThumbEviction = (weekId, dayName, delayMs = THUMB_EVICT_DELAY_MS) => {
+  const key = thumbKey(weekId, dayName);
+  cancelThumbEviction(weekId, dayName);
+  thumbEvictTimers.set(key, setTimeout(() => {
+    thumbEvictTimers.delete(key);
+    // Revoke the URL too (it was already revoked on unmount, but a
+    // stray getStoredThumb could have re-created one) so the state is
+    // consistent: no Blob, no URL — the remount reloads from IndexedDB.
+    revokeThumbUrlByKey(key);
+    if (memCache.get(key) instanceof Blob) memCache.delete(key);
+  }, delayMs));
+};
+/** A remount cancels the pending eviction — the Blob is still cached. */
+export const cancelThumbEviction = (weekId, dayName) => {
+  const key = thumbKey(weekId, dayName);
+  const t = thumbEvictTimers.get(key);
+  if (t != null) { clearTimeout(t); thumbEvictTimers.delete(key); }
+};
+const cancelAllThumbEvictions = () => {
+  for (const t of thumbEvictTimers.values()) clearTimeout(t);
+  thumbEvictTimers.clear();
+};
+/** Reload one cell's thumb Blob from IndexedDB into memCache (after an
+ *  eviction) and notify subscribers for its week so the remounted cell
+ *  re-reads it. No-op if the Blob is already cached or a load is already
+ *  in flight; if IndexedDB has no thumb the known flag is cleared so
+ *  the cell stops asking. */
+const thumbLoadInflight = new Set();
+export const loadThumb = async (weekId, dayName) => {
+  const key = thumbKey(weekId, dayName);
+  if (memCache.get(key) instanceof Blob || thumbLoadInflight.has(key)) return;
+  thumbLoadInflight.add(key);
+  try {
+    const val = await get(key);
+    if (val instanceof Blob) {
+      memCache.set(key, val);
+      notifyThumbs([weekId]);
+    } else {
+      thumbKnown.delete(key);
+    }
+  } finally {
+    thumbLoadInflight.delete(key);
+  }
+};
+
 /* ─── Thumbnail streaming (perf step 6) ───
  * initStorage resolves after the metadata phase; thumbnails load
  * afterwards in the background and subscribers are notified per batch
@@ -647,6 +712,8 @@ export const initStorage = async (onProgress) => {
   for (const url of memCache.values()) revokeBlobUrl(url);
   revokeAllThumbUrls();
   memCache.clear();
+  thumbKnown.clear(); // repopulated by the thumbnail load below (round-2 improvement 4)
+  cancelAllThumbEvictions();
   memCache.set('sb_datasets', datasets);
 
   // 1. Load metadata, notes, tags, remarks, and extra weeks — current
@@ -705,7 +772,10 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
       const val = await get(key);
       // Cache the BLOB, not an object URL (perf step 7): the URL is
       // created lazily by getStoredThumb for visible rows only.
-      if (val) memCache.set(key, val);
+      if (val) {
+        memCache.set(key, val);
+        if (val instanceof Blob) thumbKnown.add(key); // round-2 improvement 4
+      }
     }));
     if (generation !== thumbGeneration) return;
     if (onProgress) onProgress(Math.min(i + 8, thumbKeys.length), thumbKeys.length);
@@ -741,6 +811,7 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
             // any, is revoked so it doesn't linger after replacement.
             revokeThumbUrlByKey(tKey);
             memCache.set(tKey, tBlob);
+            thumbKnown.add(tKey); // round-2 improvement 4
             set(tKey, tBlob).catch(() => {});
           }
         } catch {
@@ -905,6 +976,8 @@ export const setStoredImg = async (weekId, dayName, val) => {
     memCache.set(kThumb, 'DELETED');
     memCache.set(kMed, 'DELETED');
     memCache.delete(kMeta);
+    thumbKnown.delete(kThumb); // round-2 improvement 4
+    cancelThumbEviction(weekId, dayName);
     scheduleWeekSave(weekId); // image meta lives in the week document now
     del(kImg);
     del(kThumb);
@@ -968,6 +1041,8 @@ export const setStoredImg = async (weekId, dayName, val) => {
     try {
       memCache.set(kThumb, all.thumb);
       await set(kThumb, all.thumb);
+      thumbKnown.add(kThumb); // round-2 improvement 4
+      cancelThumbEviction(weekId, dayName); // a fresh thumb just landed
     } catch (e) {
       console.warn('Could not generate thumbnail:', e);
     }
@@ -1009,6 +1084,8 @@ export const setStoredImg = async (weekId, dayName, val) => {
       if (thumb && thumb instanceof Blob) {
         memCache.set(kThumb, thumb);
         await set(kThumb, thumb);
+        thumbKnown.add(kThumb); // round-2 improvement 4
+        cancelThumbEviction(weekId, dayName); // a fresh thumb just landed
       }
     } catch (e) {
       console.warn('Could not generate thumbnail:', e);
@@ -1038,6 +1115,8 @@ export const clearStoredImg = (weekId, dayName) => {
   memCache.delete(thumbKey(weekId, dayName));
   memCache.delete(medKey(weekId, dayName));
   memCache.delete(metaKey(weekId, dayName));
+  thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
+  cancelThumbEviction(weekId, dayName);
   scheduleWeekSave(weekId); // image meta lives in the week document now
   del(imgKey(weekId, dayName));
   del(thumbKey(weekId, dayName));
@@ -1162,6 +1241,8 @@ export const deleteWeekData = (weekId) => {
     revokeThumbUrl(weekId, dayName);
     memCache.delete(thumbKey(weekId, dayName));
     del(thumbKey(weekId, dayName));
+    thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
+    cancelThumbEviction(weekId, dayName);
     memCache.delete(medKey(weekId, dayName));
     del(medKey(weekId, dayName));
     memCache.delete(metaKey(weekId, dayName));

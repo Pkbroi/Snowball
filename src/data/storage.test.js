@@ -674,3 +674,44 @@ describe('Precomputed search index (round-2 improvement 2)', () => {
     expect(matches('gapdown')).toEqual(['week-1|Tuesday', 'week-2|Monday']);
   });
 });
+
+describe('Off-screen thumbnail eviction (round-2 improvement 4)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('evicts the thumb Blob after the delay and revokes its URL, keeping the known flag', async () => {
+    const storage = await import('./storage');
+    await storage.setStoredImg('week-1', 'Monday', redPng);
+    expect(storage.hasStoredThumb('week-1', 'Monday')).toBe(true);
+    expect(storage.hasThumbBlob('week-1', 'Monday')).toBe(true);
+
+    const url = storage.getStoredThumb('week-1', 'Monday');
+    expect(url.startsWith('blob:')).toBe(true);
+    const revoked = [];
+    const spy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation((u) => { revoked.push(u); });
+    try {
+      storage.scheduleThumbEviction('week-1', 'Monday', 10);
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      spy.mockRestore();
+    }
+    // Blob gone from memCache, URL revoked — but the thumb is still
+    // known to exist in IndexedDB, so a remount reloads it.
+    expect(storage.hasThumbBlob('week-1', 'Monday')).toBe(false);
+    expect(storage.hasStoredThumb('week-1', 'Monday')).toBe(true);
+    expect(revoked).toContain(url);
+  });
+
+  it('a remount cancels the pending eviction', async () => {
+    const storage = await import('./storage');
+    await storage.setStoredImg('week-1', 'Monday', redPng);
+    storage.scheduleThumbEviction('week-1', 'Monday', 10);
+    storage.cancelThumbEviction('week-1', 'Monday');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(storage.hasThumbBlob('week-1', 'Monday')).toBe(true);
+  });
+});
