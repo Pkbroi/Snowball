@@ -270,6 +270,7 @@ const writeWeekDoc = async (weekId) => {
 };
 const scheduleWeekSave = (weekId) => {
   if (weekSaveDead.has(weekId)) return;
+  bumpSearchDataVersion(); // searchable text may have changed (round-2 improvement 2)
   let st = weekSaveState.get(weekId);
   if (!st) {
     st = { queued: false, chain: Promise.resolve() };
@@ -660,6 +661,7 @@ export const initStorage = async (onProgress) => {
   //    are loaded lazily, on demand, by getStoredImgAsync() (only when
   //    a detail page / lightbox actually needs one).
   const generation = ++thumbGeneration;
+  bumpSearchDataVersion(); // metadata reloaded: import / switch / format
   loadThumbnails(onProgress, generation).catch(() => {});
 };
 
@@ -1123,6 +1125,7 @@ export const deleteWeekData = (weekId) => {
   // resurrect the document after this delete (and any in-flight write
   // loses to this del by IndexedDB transaction order).
   weekSaveDead.add(weekId);
+  bumpSearchDataVersion(); // the week's searchable text is gone (round-2 improvement 2)
   del(wkKey(weekId));
   // Clear week label and remarks (the per-key dels also cover a week
   // whose migration failed and still has old-format keys).
@@ -1210,6 +1213,53 @@ export const setTradeDate = (weekId, dayName, dateStr) => {
     memCache.delete(dateKey(weekId, dayName));
   }
   scheduleWeekSave(weekId); // the date lives in the week document now
+};
+
+/* ─── Search index (round-2 improvement 2) ─── */
+
+// Bumped by every writer that can change searchable text, so the cached
+// index below is rebuilt at most once per data change instead of once
+// per search. All week-doc writers funnel through scheduleWeekSave;
+// initStorage covers import / dataset switch / format, and
+// deleteWeekData covers week removal.
+let searchDataVersion = 0;
+const bumpSearchDataVersion = () => { searchDataVersion++; };
+
+let searchIndexCache = null; // { version, trades, index }
+/**
+ * Lowercased search index over the given trades, cached by data version
+ * + trades reference. The journal's row filter and highlight used to
+ * re-run two regexes per note/remark (and re-lowercase every haystack)
+ * on EVERY search commit — and twice per commit, once for the filter and
+ * once for the highlights. Now the regexes + lowercasing run once per
+ * data change; each search is just cheap `includes()` on the cached
+ * strings. Fields are kept separate (label start/end, notes, tags) so a
+ * query can never match across a join boundary the old code couldn't
+ * match — results are identical to the unindexed search.
+ */
+export const getSearchIndex = (trades) => {
+  if (searchIndexCache && searchIndexCache.version === searchDataVersion && searchIndexCache.trades === trades) {
+    return searchIndexCache.index;
+  }
+  const index = trades.map((t) => {
+    const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
+    const days = {};
+    for (const d of t.days) {
+      days[d.day] = {
+        notes: getNotesText(t.id, d.day, d.notes ?? '').toLowerCase(),
+        tags: getTags(t.id, d.day).map((tag) => tag.toLowerCase()),
+      };
+    }
+    return {
+      id: t.id,
+      labelStart: lbl.weekStart.toLowerCase(),
+      labelEnd: lbl.weekEnd.toLowerCase(),
+      remarks: getRemarksText(t.id, t.remarks ?? '').toLowerCase(),
+      days,
+    };
+  });
+  searchIndexCache = { version: searchDataVersion, trades, index };
+  return index;
 };
 
 /* ─── Export / Import helpers ─── */

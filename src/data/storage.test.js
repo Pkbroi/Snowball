@@ -616,3 +616,61 @@ describe('Lazy thumbnail object URLs (perf step 7)', () => {
     expect(revoked).toContain(url);
   });
 });
+
+describe('Precomputed search index (round-2 improvement 2)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  const trades = [
+    { id: 'week-1', weekStart: '05 Jan', weekEnd: '09 Jan', remarks: '', days: [{ day: 'Monday', notes: '' }, { day: 'Tuesday', notes: '' }] },
+    { id: 'week-2', weekStart: '12 Jan', weekEnd: '16 Jan', remarks: '', days: [{ day: 'Monday', notes: '' }] },
+  ];
+
+  it('lowercases once, keeps fields separate, and caches by data version', async () => {
+    const storage = await import('./storage');
+    storage.setNotes('week-1', 'Monday', '<p>GapUp</p>');
+    storage.setTags('week-1', 'Monday', ['Breakout']);
+    storage.setRemarks('week-1', '<p>Big <b>gapup</b> day</p>');
+
+    const first = storage.getSearchIndex(trades);
+    expect(first[0].days.Monday.notes).toBe('gapup');
+    expect(first[0].days.Monday.tags).toEqual(['breakout']);
+    expect(first[0].remarks).toBe('big gapup day');
+    expect(first[0].labelStart).toBe('05 jan');
+    expect(first[1].days.Monday.notes).toBe('');
+
+    // Same data + same trades reference: the exact same cached array.
+    expect(storage.getSearchIndex(trades)).toBe(first);
+
+    // An edit invalidates the cache: the next build picks up the new text.
+    storage.setNotes('week-1', 'Monday', '<p>gapdown</p>');
+    const second = storage.getSearchIndex(trades);
+    expect(second).not.toBe(first);
+    expect(second[0].days.Monday.notes).toBe('gapdown');
+  });
+
+  it('a query matches exactly what the unindexed search matched', async () => {
+    const storage = await import('./storage');
+    storage.setNotes('week-1', 'Monday', '<p>GapUp</p>');
+    storage.setNotes('week-1', 'Tuesday', '<p>gapdown</p>');
+    storage.setNotes('week-2', 'Monday', '<p>GAPDOWN</p>');
+
+    const index = storage.getSearchIndex(trades);
+    const matches = (q) => {
+      const query = q.toLowerCase();
+      const hits = [];
+      for (const e of index) {
+        for (const [dayName, de] of Object.entries(e.days)) {
+          if (de.notes.includes(query) || de.tags.some((t) => t.includes(query))) hits.push(`${e.id}|${dayName}`);
+        }
+      }
+      return hits;
+    };
+    for (const q of ['gapup', 'GAPUP', 'GapUp']) {
+      expect(matches(q)).toEqual(['week-1|Monday']);
+    }
+    expect(matches('gapdown')).toEqual(['week-1|Tuesday', 'week-2|Monday']);
+  });
+});

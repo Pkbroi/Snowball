@@ -5,12 +5,12 @@ import { trades } from '../data/trades.js';
 import {
   setStoredImg, getStoredImgAsync,
   getStoredImg, getStoredThumb, revokeThumbUrl,
-  getRemarks, setRemarks, getRemarksText, getRemarksPreview,
+  getRemarks, setRemarks, getRemarksPreview,
   getWeekLabel, setWeekLabel,
-  getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
-  exportDatabase, importDatabase, formatDatabase, deleteIndex, getTags, getTradeDate,
+  getExtraWeeks, setExtraWeeks, deleteWeekData,
+  exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
-  subscribeThumbs, resolveMediumAsync
+  subscribeThumbs, resolveMediumAsync, getSearchIndex
 } from '../data/storage.js';
 
 
@@ -1301,15 +1301,23 @@ export default function WeeklyJournal() {
   }, [zoomIn, zoomOut]);
 
   /* ── Search filter & Date filter (Memoized for high performance) ── */
+  // Lowercased search index (round-2 improvement 2): built once per data
+  // change by getSearchIndex and cached in storage — the row filter and
+  // the highlight below used to re-run the notes/remarks regexes and
+  // re-lowercase every haystack on every search, twice over. Only built
+  // when there is a query, so a journal that is never searched pays
+  // nothing for it. Aligned with allTrades by position.
+  const searchIndex = useMemo(() => (search.trim() ? getSearchIndex(allTrades) : null), [allTrades, search]);
+
   const filtered = useMemo(() => {
-    return allTrades.filter((t) => {
+    return allTrades.filter((t, i) => {
       // 1. Date Filter Logic
       if (dateFilter) {
         let passesDateFilter = false;
         const cellDates = t.days
           .map(d => getTradeDate(t.id, d.day))
           .filter(d => d !== '');
-        
+
         if (cellDates.length > 0) {
           if (dateFilter.type === 'date') {
             if (cellDates.some(d => d >= dateFilter.date)) passesDateFilter = true;
@@ -1320,48 +1328,41 @@ export default function WeeklyJournal() {
         if (!passesDateFilter) return false;
       }
 
-      // 2. Search Logic (case-insensitive: query and all haystacks lowercased)
+      // 2. Search Logic (case-insensitive: the index holds lowercased
+      // haystacks, so this is just `includes()` per field).
       if (!search.trim()) return true;
-      const q   = search.trim().toLowerCase();
-      const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
-      const rem = getRemarksText(t.id, t.remarks ?? '');
+      const q = search.trim().toLowerCase();
+      const e = searchIndex[i];
       return (
-        lbl.weekStart.toLowerCase().includes(q) ||
-        lbl.weekEnd.toLowerCase().includes(q)   ||
-        rem.toLowerCase().includes(q)            ||
+        e.labelStart.includes(q) ||
+        e.labelEnd.includes(q)   ||
+        e.remarks.includes(q)    ||
         t.days.some((d) => {
-          const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
-          const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
-          return notesMatch || tagsMatch;
+          const de = e.days[d.day];
+          return de.notes.includes(q) || de.tags.some((tag) => tag.includes(q));
         })
       );
     });
-  }, [allTrades, dateFilter, search]);
+  }, [allTrades, dateFilter, search, searchIndex]);
 
-  // Search index: built ONCE per search change (one pass over all trades).
-  // One Set with prefixed keys, so every match source the row filter uses
-  // is highlighted — day cells (notes/tags), the remarks cell, and the
-  // week-label cell. Previously only day cells were indexed, so a remarks
-  // or label match showed a whole week with nothing marked, and the day
-  // highlight was a faint bg-white/10 tint that was easy to miss.
+  // Search index: the precomputed lowercase index (round-2 improvement
+  // 2), so the highlights cost the same cheap `includes()` scan as the
+  // row filter instead of a second full pass over the raw data.
   // Query is trimmed + lowercased, haystacks lowercased: search is fully
   // case-insensitive ("gapup" == "GapUp" == "GAPUP").
   const searchHits = useMemo(() => {
     const hits = new Set();
-    if (!search.trim()) return hits;
+    if (!search.trim() || !searchIndex) return hits;
     const q = search.trim().toLowerCase();
-    for (const t of allTrades) {
-      const lbl = getWeekLabel(t.id) ?? { weekStart: t.weekStart, weekEnd: t.weekEnd };
-      if (lbl.weekStart.toLowerCase().includes(q) || lbl.weekEnd.toLowerCase().includes(q)) hits.add(`lbl:${t.id}`);
-      if (getRemarksText(t.id, t.remarks ?? '').toLowerCase().includes(q)) hits.add(`rem:${t.id}`);
-      for (const d of t.days) {
-        const notesMatch = getNotesText(t.id, d.day, d.notes ?? '').toLowerCase().includes(q);
-        const tagsMatch = getTags(t.id, d.day).some(tag => tag.toLowerCase().includes(q));
-        if (notesMatch || tagsMatch) hits.add(`day:${t.id}|${d.day}`);
+    for (const e of searchIndex) {
+      if (e.labelStart.includes(q) || e.labelEnd.includes(q)) hits.add(`lbl:${e.id}`);
+      if (e.remarks.includes(q)) hits.add(`rem:${e.id}`);
+      for (const [dayName, de] of Object.entries(e.days)) {
+        if (de.notes.includes(q) || de.tags.some((tag) => tag.includes(q))) hits.add(`day:${e.id}|${dayName}`);
       }
     }
     return hits;
-  }, [allTrades, search]);
+  }, [search, searchIndex]);
 
   const initialIndex = useMemo(() => {
     if (!targetWeekId) return 0;
