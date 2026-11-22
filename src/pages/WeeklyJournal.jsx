@@ -10,7 +10,7 @@ import {
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTags, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
-  subscribeThumbs
+  subscribeThumbs, resolveMediumAsync
 } from '../data/storage.js';
 
 
@@ -145,6 +145,31 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     if (!window.location.hash.startsWith('#/trade/')) revokeThumbUrl(weekId, day.day);
   }, [weekId, day.day]);
 
+  // Hover-intent preload (perf step 9): the detail page shows the 1600px
+  // medium inline, so if the user pauses on a cell (~150ms — a deliberate
+  // hover, not a scroll-by), generate/cache its medium now and opening
+  // the trade feels instant. The timer is cancelled on leave and on
+  // unmount, so a fast scroll past rows preloads nothing. Empty cells
+  // have no chart, so they preload nothing. Already-cached mediums are
+  // a cheap no-op inside resolveMediumAsync.
+  const hoverTimerRef = useRef(null);
+  const handleMouseEnter = useCallback(() => {
+    if (!cellImg) return;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      resolveMediumAsync(weekId, day.day).catch(() => {});
+    }, 150);
+  }, [cellImg, weekId, day.day]);
+  const handleMouseLeave = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+  }, []);
+
   // matchesSearch comes from the parent's search index (built once per
   // search change, see searchHits below) — this cell never runs
   // getNotesText / getTags itself, so typing no longer costs O(n×5)
@@ -210,6 +235,8 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
         className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] cursor-pointer transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         title="Double-click to open detail"
       >
         <div className="absolute inset-[calc(4px*var(--tz))] border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
@@ -230,6 +257,8 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
       className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={handleDrop}
