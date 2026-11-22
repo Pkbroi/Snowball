@@ -11,7 +11,8 @@ import {
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTags, getTradeDate,
-  getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel
+  getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
+  subscribeThumbs
 } from '../data/storage.js';
 
 
@@ -123,7 +124,7 @@ const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
 /* ═══════════════════════════════════════════
    DayCell
 ═══════════════════════════════════════════ */
-const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search, matchesSearch = false }) {
+const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search, matchesSearch = false, thumbsVersion }) {
   const navigate = useNavigate();
   // Synchronous, zero-latency retrieval from pre-cached memory!
   // NOTE: this is intentionally the 480px THUMBNAIL, not the full image.
@@ -135,11 +136,12 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
   const [dragging, setDragging] = useState(false);
   const cellRef = useRef(null);
 
-  // Sync if stored thumbnail or day image changes
+  // Sync if stored thumbnail or day image changes — or when a batch of
+  // thumbnails streams in (thumbsVersion bumps, perf step 6).
   useEffect(() => {
     const current = getStoredThumb(weekId, day.day) || day.img || null;
     setCellImg(current);
-  }, [weekId, day.day, day.img]);
+  }, [weekId, day.day, day.img, thumbsVersion]);
 
   // matchesSearch comes from the parent's search index (built once per
   // search change, see searchHits below) — this cell never runs
@@ -253,7 +255,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits, remarksVersion }) {
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits, remarksVersion, thumbsVersion }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -372,6 +374,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
           remarks={trade.remarks}
           search={search}
           matchesSearch={searchHits ? searchHits.has(`day:${trade.id}|${day.day}`) : false}
+          thumbsVersion={thumbsVersion}
         />
       ))}
 
@@ -880,6 +883,11 @@ export default function WeeklyJournal() {
   // re-reads the remarks it just saved (the modal writes to storage
   // directly, and no other prop of the row changes on close).
   const [remarksVersion, setRemarksVersion] = useState(0);
+  // Bumped when a batch of thumbnails streams in (perf step 6), so the
+  // memoised rows re-read getStoredThumb and cells fill in as their
+  // thumbnails arrive — same pattern as remarksVersion.
+  const [thumbsVersion, setThumbsVersion] = useState(0);
+  useEffect(() => subscribeThumbs(() => setThumbsVersion((v) => v + 1)), []);
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
   const [datasets, setDatasets] = useState(() => getDatasets());
@@ -1529,6 +1537,7 @@ export default function WeeklyJournal() {
                               gridCols={gridTemplateColumns}
                               searchHits={searchHits}
                               remarksVersion={remarksVersion}
+                              thumbsVersion={thumbsVersion}
                             />
                           )}
                         />

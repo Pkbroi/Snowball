@@ -77,9 +77,11 @@ describe('Storage utility (Image quality — regression tests)', () => {
     const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
     await storage.setStoredImg('week-q', 'Tuesday', new File([bytes], 'chart.png', { type: 'image/png' }));
 
-    // Simulate a reload: initStorage pre-caches thumbs only.
+    // Simulate a reload: initStorage loads metadata only; thumbnails
+    // stream in afterwards (perf step 6), so wait for them explicitly.
     await storage.initStorage();
     expect(storage.getStoredImg('week-q', 'Tuesday')).toBeNull();
+    await storage.loadThumbnails();
 
     // …but the full image must still be loadable on demand for detail/lightbox.
     const full = await storage.getStoredImgAsync('week-q', 'Tuesday');
@@ -506,5 +508,48 @@ describe('Week documents — per-week metadata (perf step 4)', () => {
     expect(await get('sb_ds_nifty-50_2026__wk_week-1')).toBeTruthy();
     const allKeys = await keys();
     expect(allKeys).not.toContain('sb_ds_nifty-50_2026__notes_week-1_Monday');
+  });
+});
+
+describe('Thumbnail streaming — paint before thumbnails (perf step 6)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  it('loadThumbnails caches thumbs and notifies subscribers per batch', async () => {
+    const storage = await import('./storage');
+    const { set } = await import('idb-keyval');
+    const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'image/png' });
+    // Seed thumbnail blobs directly, as if a previous session saved them.
+    await set('sb_ds_nifty-50_2026__thumb_week-1_Monday', blob);
+    await set('sb_ds_nifty-50_2026__thumb_week-1_Tuesday', blob);
+
+    let notifications = 0;
+    const unsubscribe = storage.subscribeThumbs(() => { notifications++; });
+    await storage.loadThumbnails();
+    unsubscribe();
+
+    // NOTE: fake-indexeddb structured-clones Blobs to plain objects in
+    // jsdom, so the cached value here is a truthy object, not a blob:
+    // URL — the blob: URL form is asserted in the Playwright spec,
+    // which runs in a real browser.
+    expect(storage.getStoredThumb('week-1', 'Monday')).toBeTruthy();
+    expect(storage.getStoredThumb('week-1', 'Tuesday')).toBeTruthy();
+    expect(notifications).toBeGreaterThanOrEqual(1);
+  });
+
+  it('unsubscribe stops notifications', async () => {
+    const storage = await import('./storage');
+    const { set } = await import('idb-keyval');
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+    await set('sb_ds_nifty-50_2026__thumb_week-1_Monday', blob);
+    let notifications = 0;
+    const unsubscribe = storage.subscribeThumbs(() => { notifications++; });
+    unsubscribe();
+    await storage.loadThumbnails();
+    expect(notifications).toBe(0);
   });
 });

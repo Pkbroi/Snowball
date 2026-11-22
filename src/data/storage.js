@@ -22,6 +22,25 @@ import { get, set, del, keys, entries, clear } from 'idb-keyval';
 
 const memCache = new Map();
 
+/* ─── Thumbnail streaming (perf step 6) ───
+ * initStorage resolves after the metadata phase; thumbnails load
+ * afterwards in the background and subscribers are notified per batch
+ * so the grid can paint them in as they arrive. `thumbGeneration` is
+ * bumped on every initStorage — a thumbnail load (or backfill) from an
+ * older generation aborts without writing, so a dataset switch can
+ * never resurrect the previous dataset's thumbnails in the cache. */
+const thumbListeners = new Set();
+export const subscribeThumbs = (cb) => {
+  thumbListeners.add(cb);
+  return () => { thumbListeners.delete(cb); };
+};
+const notifyThumbs = () => {
+  for (const cb of thumbListeners) {
+    try { cb(); } catch { /* a listener must never break the load */ }
+  }
+};
+let thumbGeneration = 0;
+
 const revokeBlobUrl = (url) => {
   if (typeof url === 'string' && url.startsWith('blob:')) {
     try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
@@ -595,36 +614,62 @@ export const initStorage = async (onProgress) => {
     fanOutWeekDoc(key.slice(`${p}wk_`.length), doc);
   });
 
-  // 2. Pre-cache all thumbnails into memory (thumbnails are tiny).
-  //    Full-res images are deliberately NOT loaded here: loading/decoding
-  //    every chart up front is what blocked first paint and made scrolling
-  //    janky. They are loaded lazily, on demand, by getStoredImgAsync()
-  //    (only when a detail page / lightbox actually needs one).
+  // 2. Thumbnails stream in AFTER first paint (perf step 6): this
+  //    function resolves now, with the metadata in place, and the
+  //    thumbnail load runs in the background — the journal renders
+  //    immediately and cells fill in as their thumbnails arrive
+  //    (subscribers are notified per batch). Full-res images are
+  //    deliberately NOT loaded here: loading/decoding every chart up
+  //    front is what blocked first paint and made scrolling janky. They
+  //    are loaded lazily, on demand, by getStoredImgAsync() (only when
+  //    a detail page / lightbox actually needs one).
+  const generation = ++thumbGeneration;
+  loadThumbnails(onProgress, generation).catch(() => {});
+};
+
+/**
+ * Load every thumbnail for the current dataset into memCache, batched,
+ * notifying subscribers after each batch so the grid paints them as
+ * they arrive; then backfill missing thumbs/mediums as before. Aborts
+ * without writing if another initStorage superseded this load (a newer
+ * generation), so a dataset switch can never resurrect the previous
+ * dataset's thumbnails. `generation` is captured by initStorage; direct
+ * callers (tests) omit it and use the current generation.
+ */
+export const loadThumbnails = async (onProgress, generation = thumbGeneration) => {
+  const p = dsPrefix();
+  const allKeys = await keys();
   const thumbKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(`${p}thumb_`));
-  await runBatched(thumbKeys, async (key) => {
-    const val = await get(key);
-    if (val) {
-      const url = val instanceof Blob ? URL.createObjectURL(val) : val;
-      memCache.set(key, url);
-    }
-  });
+  // Batched reads, notifying after EACH batch so the grid paints the
+  // thumbnails that have arrived instead of waiting for all of them.
+  // (runBatched has no per-batch hook, so the loop is written out.)
+  for (let i = 0; i < thumbKeys.length; i += 8) {
+    if (generation !== thumbGeneration) return;
+    await Promise.all(thumbKeys.slice(i, i + 8).map(async (key) => {
+      const val = await get(key);
+      if (val) {
+        const url = val instanceof Blob ? URL.createObjectURL(val) : val;
+        memCache.set(key, url);
+      }
+    }));
+    if (generation !== thumbGeneration) return;
+    if (onProgress) onProgress(Math.min(i + 8, thumbKeys.length), thumbKeys.length);
+    notifyThumbs();
+  }
 
-  const total = thumbKeys.length;
-  if (onProgress && total > 0) onProgress(total, total);
-
-  // 3. Backfill missing thumbnails IN THE BACKGROUND, after first paint.
-  //    Previously this was fully awaited (canvas-decode of every full-res
-  //    image, batched, before the UI rendered) — the main cause of the
-  //    slow "Preparing images..." startup. Until a thumb exists the grid
-  //    falls back to the cached full image (getStoredThumb does that), so
-  //    nothing is visually missing; the thumb just swaps in when ready.
-  //    requestIdleCallback keeps this off the critical path; setTimeout is
-  //    the fallback (Electron / older Chromium).
+  // Backfill missing thumbnails IN THE BACKGROUND, after first paint.
+  // Until a thumb exists the grid falls back to the cached full image
+  // (getStoredThumb does that), so nothing is visually missing; the
+  // thumb just swaps in when ready. requestIdleCallback keeps this off
+  // the critical path; setTimeout is the fallback (Electron / older
+  // Chromium).
   const imgKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(`${p}img_`));
   const imgKeysWithoutThumb = imgKeys.filter(key => !memCache.has(key.replace(`${p}img_`, `${p}thumb_`)));
   if (imgKeysWithoutThumb.length > 0) {
     const backfill = () => {
+      if (generation !== thumbGeneration) return;
       runBatched(imgKeysWithoutThumb, async (key) => {
+        if (generation !== thumbGeneration) return;
         const tKey = key.replace(`${p}img_`, `${p}thumb_`);
         const val = await get(key);
         if (!val) return;
@@ -660,6 +705,11 @@ export const initStorage = async (onProgress) => {
         } catch {
           // medium is optional; detail falls back to the full image
         }
+        // This image's thumbnail (or its full-image fallback) is now in
+        // the cache — tell the grid so the cell paints it. Without this
+        // the backfilled thumbs would sit in memCache unseen until some
+        // unrelated re-render.
+        notifyThumbs();
       }, 4).catch(() => {});
     };
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
