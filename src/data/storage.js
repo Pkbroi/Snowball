@@ -113,6 +113,11 @@ export const switchDataset = async (id) => {
   if (!getDatasets().some((d) => d.id === id)) {
     throw new Error(`Unknown dataset: ${id}`);
   }
+  // Flush pending week-document saves BEFORE switching: they read the
+  // current dataset's memCache, and after the switch that cache holds
+  // the new dataset — an unflushed save would write an empty document
+  // over the old dataset's data (or delete its document outright).
+  await flushAllWeekDocs();
   currentDatasetId = id;
   await set('sb_current_dataset', id);
   await initStorage();
@@ -132,6 +137,176 @@ const dateKey = (weekId, dayName) => `${dsPrefix()}date_${weekId}_${dayName}`;
 const extraWeeksKey = () => `${dsPrefix()}extra_weeks`;
 export const MEDIUM_MAX_DIM = 1600;
 export const THUMB_MAX_DIM = 480;
+
+/* ─── Per-week metadata documents (perf step 4) ───
+ * Startup used to read every small metadata entry one by one (a
+ * separate IndexedDB request for each week label, each week's remarks,
+ * each day's notes, tags, image meta and trade date — hundreds of
+ * requests, batched 8 at a time). Now one dataset-week's small metadata
+ * lives in ONE document under a single key:
+ *   sb_ds_<id>__wk_<weekId> = { v: 1, label?, remarks?,
+ *     days: { Monday: { notes?, tags?, meta?, date? }, … } }
+ * Images (img_/thumb_/med_) stay per-key Blobs, annotations (ann_) stay
+ * per-key arrays, and extra_weeks stays its own key — this only covers
+ * the small text metadata that used to be hundreds of keys.
+ *
+ * The UI never sees the documents: on load each document is fanned out
+ * into the SAME memCache entries the old keys used (wlbl_/rem_/notes_/
+ * tags_/meta_/date_), so every getter below is unchanged and no screen
+ * changes. Writers update memCache synchronously (as before) and enqueue
+ * a document save; the save re-reads memCache when it runs, so a later
+ * edit can never be lost behind an earlier queued write.
+ */
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+const wkKey = (weekId) => `${dsPrefix()}wk_${weekId}`;
+
+/** Fan a loaded week document out into the per-key memCache entries. */
+const fanOutWeekDoc = (weekId, doc) => {
+  if (!doc || typeof doc !== 'object') return;
+  if (doc.label != null) memCache.set(wlblKey(weekId), doc.label);
+  if (doc.remarks != null) memCache.set(remKey(weekId), doc.remarks);
+  const days = doc.days && typeof doc.days === 'object' ? doc.days : {};
+  for (const [day, d] of Object.entries(days)) {
+    if (!d || typeof d !== 'object') continue;
+    if (d.notes != null) memCache.set(notesKey(weekId, day), d.notes);
+    if (d.tags != null) memCache.set(tagsKey(weekId, day), d.tags);
+    if (d.meta != null) memCache.set(metaKey(weekId, day), d.meta);
+    if (d.date != null) memCache.set(dateKey(weekId, day), d.date);
+  }
+};
+
+/** Build a week's document from the current memCache entries.
+ *  Returns null when the week holds no metadata (no document stored). */
+const buildWeekDoc = (weekId) => {
+  const doc = { v: 1 };
+  const label = memCache.get(wlblKey(weekId));
+  if (label != null) doc.label = label;
+  const remarks = memCache.get(remKey(weekId));
+  if (remarks != null) doc.remarks = remarks;
+  const days = {};
+  for (const day of DAYS) {
+    const d = {};
+    const notes = memCache.get(notesKey(weekId, day));
+    if (notes != null) d.notes = notes;
+    const tags = memCache.get(tagsKey(weekId, day));
+    if (tags != null) d.tags = tags;
+    const meta = memCache.get(metaKey(weekId, day));
+    if (meta != null) d.meta = meta;
+    const date = memCache.get(dateKey(weekId, day));
+    if (date != null) d.date = date;
+    if (Object.keys(d).length > 0) days[day] = d;
+  }
+  if (Object.keys(days).length > 0) doc.days = days;
+  if (doc.label == null && doc.remarks == null && !doc.days) return null;
+  return doc;
+};
+
+// Per-week save chains: at most one queued write per week, each write
+// re-reading memCache when it runs, so overlapping edits can never
+// overwrite each other (the classic read-modify-write lost update).
+// A failed write must not break the chain for later saves.
+const weekSaveState = new Map(); // weekId -> { queued, chain }
+const weekSaveDead = new Set(); // weekIds deleted while a save was queued
+const writeWeekDoc = async (weekId) => {
+  if (weekSaveDead.has(weekId)) return;
+  const doc = buildWeekDoc(weekId);
+  if (weekSaveDead.has(weekId)) return;
+  if (doc) await set(wkKey(weekId), doc);
+  else await del(wkKey(weekId));
+};
+const scheduleWeekSave = (weekId) => {
+  if (weekSaveDead.has(weekId)) return;
+  let st = weekSaveState.get(weekId);
+  if (!st) {
+    st = { queued: false, chain: Promise.resolve() };
+    weekSaveState.set(weekId, st);
+  }
+  if (st.queued) return; // one already queued — it reads the latest state
+  st.queued = true;
+  st.chain = st.chain.then(async () => {
+    st.queued = false;
+    await writeWeekDoc(weekId);
+  }).catch((e) => console.warn('week-doc save failed:', e));
+};
+/** Await any pending document save for one week. */
+export const flushWeekDoc = async (weekId) => {
+  const st = weekSaveState.get(weekId);
+  if (st) await st.chain;
+};
+/** Await every pending document save (export, wipe, switch, import). */
+export const flushAllWeekDocs = async () => {
+  await Promise.all([...weekSaveState.values()].map((st) => st.chain));
+};
+
+/** Parse an old-format per-key metadata key into { weekId, field, day }. */
+const parseOldMetaKey = (key) => {
+  const p = dsPrefix();
+  if (!key.startsWith(p)) return null;
+  const rest = key.slice(p.length);
+  let m = rest.match(/^(rem|wlbl)_(.+)$/);
+  if (m) return { weekId: m[2], field: m[1], day: null };
+  m = rest.match(/^(notes|tags|meta|date)_(.+)_(Monday|Tuesday|Wednesday|Thursday|Friday)$/);
+  if (m) return { weekId: m[2], field: m[1], day: m[3] };
+  return null;
+};
+
+/**
+ * Migrate the current dataset's old per-key metadata into per-week
+ * documents. Write-then-verify-then-delete, per week, so an interrupted
+ * run (crash, closed tab) is safe to re-run: a week whose document did
+ * not verify keeps its old keys, and the load phase fans those out
+ * directly; a week with both a document and old keys merges with the
+ * document winning. Runs lazily, for the current dataset only — other
+ * datasets migrate when they are opened, and old-format backups migrate
+ * on import (importDatabase re-runs initStorage).
+ */
+const migrateWeekDocs = async () => {
+  const allKeys = await keys();
+  const p = dsPrefix();
+  const oldKeys = allKeys.filter((k) => {
+    if (typeof k !== 'string' || !k.startsWith(p)) return false;
+    if (k.startsWith(`${p}wk_`)) return false;
+    return parseOldMetaKey(k) !== null;
+  });
+  if (oldKeys.length === 0) return;
+  const byWeek = new Map();
+  for (const k of oldKeys) {
+    const parsed = parseOldMetaKey(k);
+    if (!parsed) continue;
+    const list = byWeek.get(parsed.weekId) ?? [];
+    list.push([k, parsed]);
+    byWeek.set(parsed.weekId, list);
+  }
+  for (const [weekId, fields] of byWeek) {
+    try {
+      const existing = await get(wkKey(weekId));
+      const doc = existing && typeof existing === 'object' ? { ...existing } : { v: 1 };
+      if (doc.days == null) doc.days = {};
+      for (const [k, parsed] of fields) {
+        const val = await get(k);
+        if (val == null) continue;
+        if (parsed.field === 'rem') { if (doc.remarks == null) doc.remarks = val; }
+        else if (parsed.field === 'wlbl') { if (doc.label == null) doc.label = val; }
+        else {
+          const d = doc.days[parsed.day] ?? {};
+          if (d[parsed.field] == null) d[parsed.field] = val;
+          doc.days[parsed.day] = d;
+        }
+      }
+      if (Object.keys(doc.days).length === 0) delete doc.days;
+      if (doc.label == null && doc.remarks == null && !doc.days) continue;
+      await set(wkKey(weekId), doc);
+      const back = await get(wkKey(weekId));
+      if (!back || JSON.stringify(back) !== JSON.stringify(doc)) {
+        console.warn(`week-doc migration: verify failed for ${weekId}, keeping old keys`);
+        continue;
+      }
+      await runBatched(fields.map(([k]) => k), (k) => del(k), 16);
+    } catch (e) {
+      console.warn(`week-doc migration: ${weekId} failed, keeping old keys:`, e);
+    }
+  }
+};
 
 /**
  * Fast native thumbnail generator using 2D Canvas.
@@ -351,6 +526,12 @@ export const initStorage = async (onProgress) => {
     : datasets[0].id;
   await set('sb_current_dataset', currentDatasetId);
 
+  // 0b. Migrate this dataset's old per-key metadata into per-week
+  //     documents (write-then-verify-then-delete, re-runnable). Runs
+  //     before the key scan below so the load sees documents, not the
+  //     old keys. Other datasets migrate lazily when they are opened.
+  await migrateWeekDocs();
+
   const allKeys = await keys();
   // Revoke the previous dataset's blob URLs before dropping the cache,
   // otherwise every index/year switch leaks thumbnail URLs.
@@ -360,12 +541,22 @@ export const initStorage = async (onProgress) => {
 
   // 1. Load metadata, notes, tags, remarks, and extra weeks — current
   //    dataset only. Other datasets' keys stay in IndexedDB untouched.
+  //    Two passes: plain per-key entries first (annotations, extra
+  //    weeks, and any old-format keys a failed migration left behind),
+  //    then week documents fanned out — so a document always wins over
+  //    stale old keys for the same week, regardless of key order.
   const p = dsPrefix();
   const metaKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(p) && !k.startsWith(`${p}img_`) && !k.startsWith(`${p}thumb_`) && !k.startsWith(`${p}med_`));
+  const docKeys = metaKeys.filter((k) => k.startsWith(`${p}wk_`));
+  const plainKeys = metaKeys.filter((k) => !k.startsWith(`${p}wk_`));
   // Batched reads: prevent IDB queue saturation with unlimited Promise.all
-  await runBatched(metaKeys, async (key) => {
+  await runBatched(plainKeys, async (key) => {
     const val = await get(key);
     memCache.set(key, val);
+  });
+  await runBatched(docKeys, async (key) => {
+    const doc = await get(key);
+    fanOutWeekDoc(key.slice(`${p}wk_`.length), doc);
   });
 
   // 2. Pre-cache all thumbnails into memory (thumbnails are tiny).
@@ -558,10 +749,10 @@ export const setStoredImg = async (weekId, dayName, val) => {
     memCache.set(kThumb, 'DELETED');
     memCache.set(kMed, 'DELETED');
     memCache.delete(kMeta);
+    scheduleWeekSave(weekId); // image meta lives in the week document now
     del(kImg);
     del(kThumb);
     del(kMed);
-    del(kMeta);
     return null;
   }
 
@@ -601,7 +792,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
       name: val instanceof File ? val.name : null,
     };
     memCache.set(kMeta, meta);
-    set(kMeta, meta).catch(() => {});
+    scheduleWeekSave(weekId); // image meta lives in the week document now
   } catch {
     // metadata is best-effort; the image itself is already saved
   }
@@ -641,10 +832,10 @@ export const clearStoredImg = (weekId, dayName) => {
   memCache.delete(thumbKey(weekId, dayName));
   memCache.delete(medKey(weekId, dayName));
   memCache.delete(metaKey(weekId, dayName));
+  scheduleWeekSave(weekId); // image meta lives in the week document now
   del(imgKey(weekId, dayName));
   del(thumbKey(weekId, dayName));
   del(medKey(weekId, dayName));
-  del(metaKey(weekId, dayName));
 };
 
 export const resolveImg = (weekId, dayName, staticImg) => {
@@ -688,11 +879,10 @@ export const getRemarks = (weekId) => memCache.get(remKey(weekId));
 export const setRemarks = (weekId, html) => {
   if (html != null) {
     memCache.set(remKey(weekId), html);
-    set(remKey(weekId), html);
   } else {
     memCache.delete(remKey(weekId));
-    del(remKey(weekId));
   }
+  scheduleWeekSave(weekId); // remarks live in the week document now
 };
 
 /** Extract plain text from stored innerHTML (for search) */
@@ -732,7 +922,7 @@ export const getWeekLabel = (weekId) => {
 };
 export const setWeekLabel = (weekId, obj) => {
   memCache.set(wlblKey(weekId), obj);
-  set(wlblKey(weekId), obj);
+  scheduleWeekSave(weekId); // the label lives in the week document now
 };
 
 /* ─── User-added extra weeks ─── */
@@ -743,7 +933,13 @@ export const setExtraWeeks = (weeks) => {
 };
 
 export const deleteWeekData = (weekId) => {
-  // Clear week label and remarks
+  // Mark the week dead FIRST: a save queued by an earlier edit must not
+  // resurrect the document after this delete (and any in-flight write
+  // loses to this del by IndexedDB transaction order).
+  weekSaveDead.add(weekId);
+  del(wkKey(weekId));
+  // Clear week label and remarks (the per-key dels also cover a week
+  // whose migration failed and still has old-format keys).
   memCache.delete(wlblKey(weekId));
   del(wlblKey(weekId));
   memCache.delete(remKey(weekId));
@@ -776,11 +972,10 @@ export const getNotes = (weekId, dayName) => memCache.get(notesKey(weekId, dayNa
 export const setNotes = (weekId, dayName, html) => {
   if (html) {
     memCache.set(notesKey(weekId, dayName), html);
-    set(notesKey(weekId, dayName), html);
   } else {
     memCache.delete(notesKey(weekId, dayName));
-    del(notesKey(weekId, dayName));
   }
+  scheduleWeekSave(weekId); // notes live in the week document now
 };
 
 /** Plain text extracted from stored notes HTML (for search). */
@@ -795,11 +990,10 @@ export const getTags = (weekId, dayName) => memCache.get(tagsKey(weekId, dayName
 export const setTags = (weekId, dayName, tags) => {
   if (tags && tags.length > 0) {
     memCache.set(tagsKey(weekId, dayName), tags);
-    set(tagsKey(weekId, dayName), tags);
   } else {
     memCache.delete(tagsKey(weekId, dayName));
-    del(tagsKey(weekId, dayName));
   }
+  scheduleWeekSave(weekId); // tags live in the week document now
 };
 
 /* ─── Chart Annotations (lightbox, per day) ───
@@ -825,11 +1019,10 @@ export const getTradeDate = (weekId, dayName) => memCache.get(dateKey(weekId, da
 export const setTradeDate = (weekId, dayName, dateStr) => {
   if (dateStr) {
     memCache.set(dateKey(weekId, dayName), dateStr);
-    set(dateKey(weekId, dayName), dateStr);
   } else {
     memCache.delete(dateKey(weekId, dayName));
-    del(dateKey(weekId, dayName));
   }
+  scheduleWeekSave(weekId); // the date lives in the week document now
 };
 
 /* ─── Export / Import helpers ─── */
@@ -855,6 +1048,10 @@ const blobToDataURL = (blob) =>
 // payloads without freezing).
 
 export const exportDatabase = async (onProgress) => {
+  // Flush pending week-document saves first, so the backup includes the
+  // latest edits (a note typed seconds ago is otherwise still only in
+  // the memory cache).
+  await flushAllWeekDocs();
   // ONE clean backup of the whole database: every dataset (all indexes and
   // years), plus the registry and the current selection, so a single file
   // restores everything. Entries are sorted by key, so the file is
@@ -907,12 +1104,15 @@ export const exportDatabase = async (onProgress) => {
 
 
 export const exportCSVDatabase = async () => {
+  // Reads the memory cache, which holds the same per-key entries the old
+  // raw-entries version read — week documents are fanned out into it on
+  // load, so the CSV is unchanged (a raw dump would now see one wk_ key
+  // per week instead of the notes/remarks rows).
   const p = dsPrefix();
-  const allEntries = await entries();
   let csvContent = "data:text/csv;charset=utf-8,";
   csvContent += "Type,Key,Value\n";
 
-  for (const [key, value] of allEntries) {
+  for (const [key, value] of memCache) {
     if (typeof key !== 'string' || !key.startsWith(p)) continue; // current dataset only
     if (key.startsWith(`${p}img_`)) continue; // Skip images for CSV
     const type = key.startsWith(`${p}notes_`) ? 'Note' :
@@ -920,13 +1120,13 @@ export const exportCSVDatabase = async () => {
                  key.startsWith(`${p}date_`) ? 'TradeDate' :
                  key === `${p}extra_weeks` ? 'ExtraWeeks' :
                  key.startsWith(`${p}wlbl_`) ? 'WeekLabel' : 'Other';
-                 
+
     let strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
     // Escape quotes
     strValue = strValue.replace(/"/g, '""');
     csvContent += `"${type}","${key}","${strValue}"\n`;
   }
-  
+
   return encodeURI(csvContent);
 };
 
@@ -946,6 +1146,10 @@ export const importDatabase = async (jsonString, onProgress) => {
   if (sbKeys.length === 0 && data.length > 0) {
     throw new Error('Invalid backup: file contains no Snowball data (sb_ keys).');
   }
+
+  // Flush pending week-document saves before wiping: a save queued by an
+  // edit would otherwise run after the wipe and resurrect its document.
+  await flushAllWeekDocs();
 
   // Three backup shapes, all restored losslessly (images are stored as
   // data-URLs and converted back to Blobs byte-for-byte — never re-encoded):
@@ -1044,6 +1248,9 @@ export const importDatabase = async (jsonString, onProgress) => {
 
 export const formatDatabase = async () => {
   // Wipe ONLY the current (index, year) dataset — other datasets are kept.
+  // Flush first: a queued week-document save would otherwise run after
+  // the wipe and resurrect its document.
+  await flushAllWeekDocs();
   const p = dsPrefix();
   const allKeys = await keys();
   await runBatched(
@@ -1068,6 +1275,9 @@ export const deleteIndex = async (index) => {
   const datasets = getDatasets();
   const doomed = datasets.filter((d) => d.index === cleanIndex);
   if (doomed.length === 0) throw new Error(`Unknown index: ${cleanIndex}`);
+  // Flush first: a queued week-document save would otherwise run after
+  // the wipe and resurrect its document.
+  await flushAllWeekDocs();
   const doomedIds = new Set(doomed.map((d) => d.id));
   const allKeys = await keys();
   const doomedKeys = allKeys.filter(

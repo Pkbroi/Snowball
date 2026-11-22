@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { getTags, setTags, initStorage, formatDatabase } from './storage';
 import { clear } from 'idb-keyval';
 
@@ -158,7 +158,12 @@ describe('Datasets (index × year)', () => {
     const allKeys = await keys();
     expect(allKeys).not.toContain('sb_extra_weeks');
     expect(allKeys).toContain('sb_ds_nifty-50_2026__extra_weeks');
-    expect(allKeys).toContain('sb_ds_nifty-50_2026__notes_week-1_Monday');
+    // Legacy flat keys first move under the dataset prefix, then the
+    // week-doc migration folds them into one document per week — the
+    // old per-key names must be gone.
+    expect(allKeys).toContain('sb_ds_nifty-50_2026__wk_week-1');
+    expect(allKeys).not.toContain('sb_ds_nifty-50_2026__notes_week-1_Monday');
+    expect(allKeys).not.toContain('sb_ds_nifty-50_2026__rem_week-1');
     expect(storage.getCurrentDataset().id).toBe('nifty-50_2026');
   });
 
@@ -191,15 +196,12 @@ describe('Datasets (index × year)', () => {
 
   it('exports the whole database as one clean, key-sorted file', async () => {
     const storage = await import('./storage');
-    const { get } = await import('idb-keyval');
     storage.setTags('week-1', 'Monday', ['NiftyWin']);
     await storage.createDataset('Bank Nifty', 2026);
     await storage.switchDataset('bank-nifty_2026');
     storage.setTags('week-1', 'Monday', ['BankWin']);
-    // setTags writes to IndexedDB async — wait for it to land before exporting.
-    await vi.waitFor(async () => {
-      expect(await get('sb_ds_bank-nifty_2026__tags_week-1_Monday')).toEqual(['BankWin']);
-    });
+    // setTags writes the week document async — flush it before exporting.
+    await storage.flushAllWeekDocs();
     const json = await storage.exportDatabase();
     const data = JSON.parse(json);
     // Both datasets in one file, registry included, no per-dataset marker.
@@ -218,14 +220,11 @@ describe('Datasets (index × year)', () => {
 
   it('import restores the whole database, including the selected dataset', async () => {
     const storage = await import('./storage');
-    const { get } = await import('idb-keyval');
     storage.setTags('week-1', 'Monday', ['NiftyWin']);
     await storage.createDataset('Bank Nifty', 2026);
     await storage.switchDataset('bank-nifty_2026');
     storage.setTags('week-1', 'Monday', ['BankWin']);
-    await vi.waitFor(async () => {
-      expect(await get('sb_ds_bank-nifty_2026__tags_week-1_Monday')).toEqual(['BankWin']);
-    });
+    await storage.flushAllWeekDocs();
     const backup = await storage.exportDatabase();
 
     // Wipe everything, then restore from the single backup file.
@@ -320,5 +319,178 @@ describe('Datasets (index × year)', () => {
   it('deleteIndex rejects an unknown index', async () => {
     const storage = await import('./storage');
     await expect(storage.deleteIndex('No Such Index')).rejects.toThrow('Unknown index');
+  });
+});
+
+describe('Week documents — per-week metadata (perf step 4)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  it('writers persist into one document per week, readable after a fresh load', async () => {
+    const storage = await import('./storage');
+    const { get, keys } = await import('idb-keyval');
+    storage.setWeekLabel('week-1', { month: 'Nov', dates: '10–14' });
+    storage.setRemarks('week-1', '<p>good week</p>');
+    storage.setNotes('week-1', 'Monday', '<p>gap up</p>');
+    storage.setTags('week-1', 'Monday', ['GapUp']);
+    storage.setTradeDate('week-1', 'Monday', '2026-11-10');
+    storage.setNotes('week-1', 'Tuesday', '<p>flat</p>');
+    await storage.flushAllWeekDocs();
+
+    const doc = await get('sb_ds_nifty-50_2026__wk_week-1');
+    expect(doc).toEqual({
+      v: 1,
+      label: { month: 'Nov', dates: '10–14' },
+      remarks: '<p>good week</p>',
+      days: {
+        Monday: { notes: '<p>gap up</p>', tags: ['GapUp'], date: '2026-11-10' },
+        Tuesday: { notes: '<p>flat</p>' },
+      },
+    });
+    // No per-key metadata keys survive for this week.
+    const allKeys = await keys();
+    expect(allKeys.filter((k) => typeof k === 'string' && k.includes('week-1') && !k.includes('__wk_'))).toEqual([]);
+
+    // Simulate a reload: a fresh initStorage fans the document back out.
+    await storage.initStorage();
+    expect(storage.getWeekLabel('week-1')).toEqual({ month: 'Nov', dates: '10–14' });
+    expect(storage.getRemarks('week-1')).toBe('<p>good week</p>');
+    expect(storage.getNotes('week-1', 'Monday')).toBe('<p>gap up</p>');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['GapUp']);
+    expect(storage.getTradeDate('week-1', 'Monday')).toBe('2026-11-10');
+    expect(storage.getNotes('week-1', 'Tuesday')).toBe('<p>flat</p>');
+  });
+
+  it('rapid writes coalesce: only the last value lands in the document', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    storage.setNotes('week-1', 'Monday', '<p>one</p>');
+    storage.setNotes('week-1', 'Monday', '<p>two</p>');
+    storage.setNotes('week-1', 'Monday', '<p>three</p>');
+    storage.setTags('week-1', 'Monday', ['A']);
+    storage.setTags('week-1', 'Monday', ['B']);
+    await storage.flushAllWeekDocs();
+    const doc = await get('sb_ds_nifty-50_2026__wk_week-1');
+    expect(doc.days.Monday.notes).toBe('<p>three</p>');
+    expect(doc.days.Monday.tags).toEqual(['B']);
+  });
+
+  it('an empty week stores no document', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    storage.setNotes('week-1', 'Monday', '<p>temp</p>');
+    storage.setNotes('week-1', 'Monday', '');
+    await storage.flushAllWeekDocs();
+    expect(await get('sb_ds_nifty-50_2026__wk_week-1')).toBeUndefined();
+    expect(storage.getNotes('week-1', 'Monday')).toBeUndefined();
+  });
+
+  it('migration converts old per-key metadata and deletes the old keys', async () => {
+    const storage = await import('./storage');
+    const { get, set, keys } = await import('idb-keyval');
+    const p = 'sb_ds_nifty-50_2026__';
+    await set(`${p}wlbl_week-9`, { month: 'Oct', dates: '27–31' });
+    await set(`${p}rem_week-9`, '<p>old remarks</p>');
+    await set(`${p}notes_week-9_Monday`, '<p>old note</p>');
+    await set(`${p}tags_week-9_Monday`, ['OldTag']);
+    await set(`${p}meta_week-9_Monday`, { width: 100, height: 50, size: 10, type: 'image/png', name: null });
+    await set(`${p}date_week-9_Monday`, '2026-10-27');
+    await set(`${p}notes_week-9_Friday`, '<p>friday note</p>');
+    await storage.initStorage();
+
+    expect(storage.getWeekLabel('week-9')).toEqual({ month: 'Oct', dates: '27–31' });
+    expect(storage.getRemarks('week-9')).toBe('<p>old remarks</p>');
+    expect(storage.getNotes('week-9', 'Monday')).toBe('<p>old note</p>');
+    expect(storage.getTags('week-9', 'Monday')).toEqual(['OldTag']);
+    expect(storage.getImageMeta('week-9', 'Monday')).toEqual(
+      { width: 100, height: 50, size: 10, type: 'image/png', name: null });
+    expect(storage.getTradeDate('week-9', 'Monday')).toBe('2026-10-27');
+    expect(storage.getNotes('week-9', 'Friday')).toBe('<p>friday note</p>');
+    const doc = await get(`${p}wk_week-9`);
+    expect(doc.v).toBe(1);
+    expect(doc.days.Monday.meta).toEqual({ width: 100, height: 50, size: 10, type: 'image/png', name: null });
+    const allKeys = await keys();
+    expect(allKeys.filter((k) => typeof k === 'string' && k.startsWith(p) && !k.startsWith(`${p}wk_`) && !k.startsWith(`${p}extra_`) && k !== 'sb_datasets' && k !== 'sb_current_dataset')).toEqual([]);
+  });
+
+  it('migration is idempotent: a second load changes nothing', async () => {
+    const storage = await import('./storage');
+    const { get, set } = await import('idb-keyval');
+    const p = 'sb_ds_nifty-50_2026__';
+    await set(`${p}notes_week-9_Monday`, '<p>old note</p>');
+    await storage.initStorage();
+    const first = await get(`${p}wk_week-9`);
+    await storage.initStorage();
+    const second = await get(`${p}wk_week-9`);
+    expect(second).toEqual(first);
+    expect(storage.getNotes('week-9', 'Monday')).toBe('<p>old note</p>');
+  });
+
+  it('interrupted migration merges with the document winning', async () => {
+    const storage = await import('./storage');
+    const { set } = await import('idb-keyval');
+    const p = 'sb_ds_nifty-50_2026__';
+    // A document already exists (newer notes) but the old keys were never
+    // deleted, and the old keys hold a field the document lacks (tags).
+    await set(`${p}wk_week-9`, {
+      v: 1,
+      days: { Monday: { notes: '<p>new note</p>' } },
+    });
+    await set(`${p}notes_week-9_Monday`, '<p>stale note</p>');
+    await set(`${p}tags_week-9_Monday`, ['KeptTag']);
+    await storage.initStorage();
+    expect(storage.getNotes('week-9', 'Monday')).toBe('<p>new note</p>');
+    expect(storage.getTags('week-9', 'Monday')).toEqual(['KeptTag']);
+    const doc = await (await import('idb-keyval')).get(`${p}wk_week-9`);
+    expect(doc.days.Monday).toEqual({ notes: '<p>new note</p>', tags: ['KeptTag'] });
+    const allKeys = await (await import('idb-keyval')).keys();
+    expect(allKeys).not.toContain(`${p}notes_week-9_Monday`);
+    expect(allKeys).not.toContain(`${p}tags_week-9_Monday`);
+  });
+
+  it('deleteWeekData removes the document and it stays gone', async () => {
+    const storage = await import('./storage');
+    const { get } = await import('idb-keyval');
+    // A distinct week id: a deleted week's id is never reused in the app
+    // (custom ids carry a timestamp + random suffix), and the delete
+    // marks the id dead so a queued save cannot resurrect it.
+    storage.setNotes('week-del', 'Monday', '<p>to delete</p>');
+    storage.setTags('week-del', 'Monday', ['Gone']);
+    storage.deleteWeekData('week-del');
+    // A save queued by the edits above must not resurrect the document.
+    await storage.flushAllWeekDocs();
+    expect(await get('sb_ds_nifty-50_2026__wk_week-del')).toBeUndefined();
+    expect(storage.getNotes('week-del', 'Monday')).toBeUndefined();
+    expect(storage.getTags('week-del', 'Monday')).toEqual([]);
+  });
+
+  it('export includes the latest edit without waiting', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['JustTyped']);
+    const json = await storage.exportDatabase();
+    expect(json).toContain('JustTyped');
+    expect(json).toContain('sb_ds_nifty-50_2026__wk_week-1');
+    expect(json).not.toContain('sb_ds_nifty-50_2026__tags_week-1_Monday');
+  });
+
+  it('an old-format backup imports and migrates on load', async () => {
+    const storage = await import('./storage');
+    const legacy = JSON.stringify([
+      ['sb_datasets', [{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]],
+      ['sb_current_dataset', 'nifty-50_2026'],
+      ['sb_ds_nifty-50_2026__notes_week-1_Monday', '<p>backed up note</p>'],
+      ['sb_ds_nifty-50_2026__tags_week-1_Monday', ['BackupTag']],
+      ['sb_ds_nifty-50_2026__rem_week-1', '<p>backed up remarks</p>'],
+    ]);
+    await storage.importDatabase(legacy);
+    expect(storage.getNotes('week-1', 'Monday')).toBe('<p>backed up note</p>');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['BackupTag']);
+    expect(storage.getRemarks('week-1')).toBe('<p>backed up remarks</p>');
+    const { get, keys } = await import('idb-keyval');
+    expect(await get('sb_ds_nifty-50_2026__wk_week-1')).toBeTruthy();
+    const allKeys = await keys();
+    expect(allKeys).not.toContain('sb_ds_nifty-50_2026__notes_week-1_Monday');
   });
 });
