@@ -1,8 +1,6 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect, memo, useMemo } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, memo, useMemo, lazy, Suspense } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Virtuoso } from 'react-virtuoso';
-import ReactQuill from 'react-quill-new';
-import 'react-quill-new/dist/quill.snow.css';
 import { trades } from '../data/trades.js';
 import {
   setStoredImg, getStoredImgAsync,
@@ -20,6 +18,12 @@ import {
 /* ═══════════════════════════════════════════
    Remarks Modal
 ═══════════════════════════════════════════ */
+
+// The remarks editor (~200KB Quill) loads only when a remarks modal is
+// opened (perf step 8) — WeeklyJournal never imports react-quill-new,
+// so the journal's initial load carries no editor bundle.
+const RemarksEditor = lazy(() => import('./RemarksEditor.jsx'));
+
 function RemarksModal({ trade, onClose }) {
   const [content, setContent] = useState(() => getRemarks(trade.id) ?? trade.remarks ?? '');
   const [saveStatus, setSaveStatus] = useState('');
@@ -85,22 +89,9 @@ function RemarksModal({ trade, onClose }) {
 
         {/* Rich editor */}
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-          <ReactQuill 
-            theme="snow"
-            value={content}
-            onChange={handleChange}
-            placeholder="Start writing… (formatting toolbar available)"
-            className="h-full min-h-[350px] text-on-surface"
-            modules={{
-              toolbar: [
-                [{ 'header': [1, 2, 3, false] }],
-                ['bold', 'italic', 'underline', 'strike'],
-                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-                ['link', 'image'],
-                ['clean']
-              ]
-            }}
-          />
+          <Suspense fallback={<div className="h-full min-h-[350px] text-on-surface-variant px-3 py-2">Loading editor…</div>}>
+            <RemarksEditor value={content} onChange={handleChange} />
+          </Suspense>
         </div>
       </div>
     </div>

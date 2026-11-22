@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { makeChartPng } from './helpers/chart-png.js';
+import { ensureNotesEditor } from './helpers/notes-editor.js';
 
 // Pictures pasted/dropped into the notes editor: right-click to select,
 // dotted outline + 8 handles to resize, × button to delete.
@@ -8,8 +9,7 @@ async function openDetailWithNotesImage(page) {
   await page.goto('/');
   await page.getByTestId('add-week-btn').click();
   await page.locator('[data-testid^="day-cell-"]').first().dblclick();
-  const editor = page.getByTestId('notes-editor');
-  await expect(editor).toBeVisible();
+  const editor = await ensureNotesEditor(page);
   const png = makeChartPng(800, 450);
   await editor.click();
   await page.evaluate(async (b64) => {
@@ -28,8 +28,7 @@ async function reopenCell(page) {
   await page.getByTestId('back-button').click();
   await expect(page).toHaveURL(/.*\/$/);
   await page.locator('[data-testid^="day-cell-"]').first().dblclick();
-  const editor = page.getByTestId('notes-editor');
-  await expect(editor).toBeVisible();
+  const editor = await ensureNotesEditor(page);
   return editor;
 }
 

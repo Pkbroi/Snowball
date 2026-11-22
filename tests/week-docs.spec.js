@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { makeChartPng } from './helpers/chart-png.js';
+import { ensureNotesEditor } from './helpers/notes-editor.js';
 
 // Per-week metadata documents (perf step 4): small metadata used to be
 // one IndexedDB key per week label / remarks / day notes / tags / image
@@ -50,7 +51,7 @@ test.describe('Week documents (perf step 4)', () => {
     await expect(mondayCell).toBeVisible();
     await mondayCell.dblclick();
     await expect(page).toHaveURL(/\/trade\/week-9/);
-    await expect(page.getByTestId('notes-editor')).toContainText('migrated note');
+    await expect(await ensureNotesEditor(page)).toContainText('migrated note');
     await expect(page.locator('text=MigratedTag').first()).toBeVisible();
     await expect(page.getByTestId('original-badge')).toBeVisible();
 
@@ -76,7 +77,7 @@ test.describe('Week documents (perf step 4)', () => {
     await expect(page).toHaveURL(/\/trade\/.*/);
     const weekId = page.url().split('/trade/')[1];
 
-    const editor = page.getByTestId('notes-editor');
+    const editor = await ensureNotesEditor(page);
     await editor.fill('Week-doc persistence check');
     await expect(page.locator('text="Saved ✓"').first()).toBeVisible();
     await page.getByPlaceholder('Add tag...').fill('PersistTag');
@@ -91,7 +92,7 @@ test.describe('Week documents (perf step 4)', () => {
     await expect(page.getByTestId('search-input')).toBeVisible();
     await page.locator(`[data-testid="day-cell-${weekId}-Monday"]`).dblclick();
     await expect(page).toHaveURL(/\/trade\/.*/);
-    await expect(page.getByTestId('notes-editor')).toContainText('Week-doc persistence check');
+    await expect(await ensureNotesEditor(page)).toContainText('Week-doc persistence check');
     await expect(page.locator('text=PersistTag').first()).toBeVisible();
   });
 });

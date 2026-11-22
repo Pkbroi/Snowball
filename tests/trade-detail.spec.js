@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { ensureNotesEditor } from './helpers/notes-editor.js';
 
 test.describe('Trade Detail Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -20,15 +21,16 @@ test.describe('Trade Detail Page', () => {
     // Verify the back button exists
     await expect(page.getByTestId('back-button')).toBeVisible();
     
-    // Verify the notes editor exists
-    await expect(page.getByTestId('notes-editor')).toBeVisible();
+    // Verify the notes editor exists (it mounts lazily when the notes
+    // section scrolls into view — see ensureNotesEditor).
+    await ensureNotesEditor(page);
   });
 
   test('should display auto-save indicator when notes are typed', async ({ page }) => {
     const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();
     await firstDayCell.dblclick();
 
-    const editor = page.getByTestId('notes-editor');
+    const editor = await ensureNotesEditor(page);
     await editor.fill('Testing auto save');
 
     // Wait for the "Saved ✓" indicator to appear
@@ -40,7 +42,7 @@ test.describe('Trade Detail Page', () => {
     const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();
     await firstDayCell.dblclick();
 
-    const editor = page.getByTestId('notes-editor');
+    const editor = await ensureNotesEditor(page);
     await editor.fill('Bold without selecting anything');
     await expect(editor).toContainText('Bold without selecting anything');
     // The editor itself and the typed paragraph both render bold (700).

@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeChartPng } from './helpers/chart-png.js';
+import { ensureNotesEditor } from './helpers/notes-editor.js';
 
 // Tests for the v2 smooth-experience work:
 //  - three-tier images: inline detail shows the 1600px medium, the
@@ -78,7 +79,7 @@ test.describe('Smooth experience (v2)', () => {
   test('search highlight still works from the once-built index', async ({ page }, testInfo) => {
     await uploadChart(page, testInfo);
     // Write a unique word into the notes, then go back to the journal.
-    const editor = page.getByTestId('notes-editor');
+    const editor = await ensureNotesEditor(page);
     await editor.click();
     await page.keyboard.type('ZEBRA42 breakout');
     await page.waitForTimeout(800);
