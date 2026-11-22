@@ -338,6 +338,65 @@ describe('Datasets (index × year)', () => {
   });
 });
 
+describe('Import validation (bug fix: corrupt backup must not wipe the database)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  // A whole-database backup carrying one corrupt image entry: the import
+  // must reject BEFORE wiping, so the existing journal survives untouched.
+  it('corrupt image in backup throws before wiping — existing data survives', async () => {
+    const storage = await import('./storage');
+    const { keys } = await import('idb-keyval');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await storage.setStoredImg('week-1', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+    storage.setTags('week-1', 'Monday', ['KeepMe']);
+    await storage.flushAllWeekDocs();
+
+    const corrupt = JSON.stringify([
+      ['sb_datasets', [{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]],
+      ['sb_current_dataset', 'nifty-50_2026'],
+      ['sb_ds_nifty-50_2026__img_week-9_Monday', 'data:image/png;base64,!!!not-valid-base64!!!'],
+      ['sb_ds_nifty-50_2026__img_week-9_Tuesday', redPng],
+    ]);
+    await expect(storage.importDatabase(corrupt)).rejects.toThrow(/corrupted.*Nothing was changed/);
+
+    // The old chart and the old tags are still there — nothing was wiped,
+    // and the valid image from the corrupt backup was never written either.
+    const allKeys = await keys();
+    expect(allKeys).toContain('sb_ds_nifty-50_2026__img_week-1_Monday');
+    expect(allKeys).not.toContain('sb_ds_nifty-50_2026__img_week-9_Tuesday');
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['KeepMe']);
+    expect(storage.getCurrentDataset().id).toBe('nifty-50_2026');
+  });
+
+  it('empty image payload throws before wiping', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['KeepMe']);
+    await storage.flushAllWeekDocs();
+    const empty = JSON.stringify([
+      ['sb_datasets', [{ id: 'nifty-50_2026', index: 'Nifty 50', year: 2026 }]],
+      ['sb_current_dataset', 'nifty-50_2026'],
+      ['sb_ds_nifty-50_2026__img_week-9_Monday', 'data:image/png;base64,'],
+    ]);
+    await expect(storage.importDatabase(empty)).rejects.toThrow(/empty.*Nothing was changed/);
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['KeepMe']);
+  });
+
+  it('non-iterable backup element throws a friendly error before wiping', async () => {
+    const storage = await import('./storage');
+    storage.setTags('week-1', 'Monday', ['KeepMe']);
+    await storage.flushAllWeekDocs();
+    await expect(storage.importDatabase(JSON.stringify([5, null, ['sb_datasets', []]]))).rejects.toThrow(
+      'Invalid backup: expected a JSON array of [key, value] pairs.'
+    );
+    expect(storage.getTags('week-1', 'Monday')).toEqual(['KeepMe']);
+  });
+});
+
 describe('Week documents — per-week metadata (perf step 4)', () => {
   beforeEach(async () => {
     await clear();

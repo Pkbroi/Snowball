@@ -539,6 +539,9 @@ function SettingsModal({ onClose }) {
       console.error('Import failed:', err);
       setOp({ status: 'idle', step: '', done: 0, total: 0 });
       alert(`Import failed: ${err.message}`);
+      // If the old database was already wiped, the screen still shows its
+      // data from memory — reload so the UI matches what's actually stored.
+      if (err.wiped) window.location.reload();
     }
   };
 

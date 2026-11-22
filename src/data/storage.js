@@ -1477,6 +1477,15 @@ export const importDatabase = async (jsonString, onProgress) => {
   }
   if (!Array.isArray(data)) throw new Error('Invalid backup: expected a JSON array');
 
+  // Validate pair shape before touching anything: a non-iterable element
+  // (e.g. a bare number or null) would otherwise throw a raw TypeError
+  // out of the filter/find/destructure calls below.
+  for (const entry of data) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') {
+      throw new Error('Invalid backup: expected a JSON array of [key, value] pairs.');
+    }
+  }
+
   // Validate before clearing — protect against importing a wrong/empty file
   const sbKeys = data.filter(([k]) => typeof k === 'string' && String(k).startsWith('sb_'));
   if (sbKeys.length === 0 && data.length > 0) {
@@ -1502,6 +1511,10 @@ export const importDatabase = async (jsonString, onProgress) => {
   let normalised = [];
   let wipeAll = false;
   let wipePrefix = null;
+  // The target dataset of a single-dataset / legacy backup: only becomes
+  // current once the backup has validated (see below) — a failed import
+  // must not leave the module pointing at another dataset.
+  let importTargetId = null;
 
   if (hasRegistry) {
     wipeAll = true;
@@ -1538,23 +1551,13 @@ export const importDatabase = async (jsonString, onProgress) => {
       normalised.push(['sb_datasets', [...datasets, target]]);
     }
     normalised.push(['sb_current_dataset', target.id]);
-    currentDatasetId = target.id;
+    importTargetId = target.id;
   }
 
-  // Wipe what the backup replaces: everything for a whole-database backup,
-  // only the target dataset for a single-dataset / legacy backup.
-  if (wipeAll) {
-    await clear();
-  } else if (wipePrefix) {
-    const existingKeys = await keys();
-    await runBatched(
-      existingKeys.filter(k => typeof k === 'string' && k.startsWith(wipePrefix)),
-      (k) => del(k), 16,
-    );
-  }
-
-  // Skip thumbnails from the backup — initStorage will regenerate them
-  // from the full-resolution images after import.
+  // Split the backup into image entries (data-URL strings) and everything
+  // else, BEFORE wiping — the split is needed for the validation below.
+  // Thumbnails are skipped: initStorage regenerates them from the full
+  // images after import.
   const imageEntries = normalised.filter(([k, v]) =>
     typeof v === 'string' && v.startsWith('data:image') && !String(k).includes('__thumb_')
   );
@@ -1562,24 +1565,66 @@ export const importDatabase = async (jsonString, onProgress) => {
     !(typeof v === 'string' && v.startsWith('data:image'))
   );
 
-  // Write metadata at high concurrency (strings/objects, very fast)
-  await runBatched(otherEntries, ([k, v]) => set(k, v), 16);
+  // Decode every image BEFORE wiping: a corrupt/truncated base64 image
+  // (atob throws InvalidCharacterError) must fail here, while the old
+  // database is still intact — never after the wipe, which used to leave
+  // a half-restored database. The Blobs are held in memory and written
+  // after the wipe, so each image is decoded exactly once.
+  const imageBlobs = new Map();
+  for (let i = 0; i < imageEntries.length; i++) {
+    const [k, v] = imageEntries[i];
+    let blob;
+    try {
+      blob = dataURLtoBlob(v);
+    } catch {
+      throw new Error(`Invalid backup: the image stored under "${k}" is corrupted (bad base64 data). Nothing was changed.`);
+    }
+    if (blob.size === 0) {
+      throw new Error(`Invalid backup: the image stored under "${k}" is empty. Nothing was changed.`);
+    }
+    imageBlobs.set(k, blob);
+    // Yield periodically so a huge backup doesn't freeze the UI while decoding.
+    if ((i + 1) % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+  }
 
-  // Write images: dataURLtoBlob is instant (atob + TypedArray),
-  // vastly faster than the previous fetch(dataURL) approach.
-  const total = imageEntries.length;
-  let done = 0;
-  if (onProgress && total > 0) onProgress(0, total);
+  // The backup has validated: the target dataset becomes current now.
+  if (importTargetId) currentDatasetId = importTargetId;
 
-  await runBatched(imageEntries, async ([k, v]) => {
-    const blob = dataURLtoBlob(v);
-    await set(k, blob);
-    done++;
-    if (onProgress && total > 0) onProgress(done, total);
-  }, 4); // 4 concurrent IDB writes for large blobs
+  // From here on the old database is gone, so any failure is marked
+  // (err.wiped) and the caller reloads instead of showing stale data.
+  try {
+    // Wipe what the backup replaces: everything for a whole-database backup,
+    // only the target dataset for a single-dataset / legacy backup.
+    if (wipeAll) {
+      await clear();
+    } else if (wipePrefix) {
+      const existingKeys = await keys();
+      await runBatched(
+        existingKeys.filter(k => typeof k === 'string' && k.startsWith(wipePrefix)),
+        (k) => del(k), 16,
+      );
+    }
 
-  // Re-initialize: warms the memory cache and regenerates any missing thumbnails
-  await initStorage(onProgress);
+    // Write metadata at high concurrency (strings/objects, very fast)
+    await runBatched(otherEntries, ([k, v]) => set(k, v), 16);
+
+    // Write the pre-decoded image Blobs (no second atob pass).
+    const total = imageEntries.length;
+    let done = 0;
+    if (onProgress && total > 0) onProgress(0, total);
+
+    await runBatched(imageEntries, async ([k]) => {
+      await set(k, imageBlobs.get(k));
+      done++;
+      if (onProgress && total > 0) onProgress(done, total);
+    }, 4); // 4 concurrent IDB writes for large blobs
+
+    // Re-initialize: warms the memory cache and regenerates any missing thumbnails
+    await initStorage(onProgress);
+  } catch (err) {
+    err.wiped = true;
+    throw err;
+  }
 };
 
 export const formatDatabase = async () => {
