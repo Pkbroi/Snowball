@@ -315,15 +315,28 @@ const parseOldMetaKey = (key) => {
  * datasets migrate when they are opened, and old-format backups migrate
  * on import (importDatabase re-runs initStorage).
  */
-const migrateWeekDocs = async () => {
-  const allKeys = await keys();
+/**
+ * Migrate old per-key metadata into per-week documents. Takes the key
+ * list initStorage already fetched and returns the ADJUSTED list — old
+ * keys that were successfully migrated (written + verified + deleted)
+ * removed, the week documents written for them added — so initStorage's
+ * metadata phase reads exactly the post-migration state without a
+ * second full key scan (round-2 improvement 3: the migration used to
+ * run its own `keys()` scan on every startup, even though migration
+ * finished long ago and there is usually nothing to migrate). A week
+ * whose verify fails keeps its old keys, and they stay in the returned
+ * list, so the plain-keys pass still loads them.
+ */
+const migrateWeekDocs = async (allKeys) => {
   const p = dsPrefix();
   const oldKeys = allKeys.filter((k) => {
     if (typeof k !== 'string' || !k.startsWith(p)) return false;
     if (k.startsWith(`${p}wk_`)) return false;
     return parseOldMetaKey(k) !== null;
   });
-  if (oldKeys.length === 0) return;
+  if (oldKeys.length === 0) return allKeys;
+  const deleted = new Set();
+  const added = new Set();
   const byWeek = new Map();
   for (const k of oldKeys) {
     const parsed = parseOldMetaKey(k);
@@ -357,10 +370,13 @@ const migrateWeekDocs = async () => {
         continue;
       }
       await runBatched(fields.map(([k]) => k), (k) => del(k), 16);
+      for (const [k] of fields) deleted.add(k);
+      added.add(wkKey(weekId));
     } catch (e) {
       console.warn(`week-doc migration: ${weekId} failed, keeping old keys:`, e);
     }
   }
+  return [...new Set([...allKeys.filter((k) => !deleted.has(k)), ...added])];
 };
 
 /**
@@ -618,12 +634,14 @@ export const initStorage = async (onProgress) => {
   await set('sb_current_dataset', currentDatasetId);
 
   // 0b. Migrate this dataset's old per-key metadata into per-week
-  //     documents (write-then-verify-then-delete, re-runnable). Runs
-  //     before the key scan below so the load sees documents, not the
-  //     old keys. Other datasets migrate lazily when they are opened.
-  await migrateWeekDocs();
+  //     documents (write-then-verify-then-delete, re-runnable). Takes
+  //     the key list fetched below and returns it adjusted for the
+  //     migration, so the metadata phase reads the post-migration state
+  //     without a second full key scan (round-2 improvement 3).
+  //     Other datasets migrate lazily when they are opened.
+  let allKeys = await keys();
+  allKeys = await migrateWeekDocs(allKeys);
 
-  const allKeys = await keys();
   // Revoke the previous dataset's blob URLs before dropping the cache,
   // otherwise every index/year switch leaks thumbnail URLs.
   for (const url of memCache.values()) revokeBlobUrl(url);
