@@ -296,9 +296,11 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
   const labelMatch = searchHits ? searchHits.has(`lbl:${trade.id}`) : false;
 
   // The front-page cell shows the first 5 lines of the remarks in bold
-  // white; recompute when the remarks modal closes (remarksVersion bumps),
-  // because the modal saves straight to storage and nothing else here
-  // changes — without it the memoised row would keep showing the old text.
+  // white; recompute when this week's remarks modal closes (its
+  // per-week remarksVersion bumps), because the modal saves straight to
+  // storage and nothing else here changes — without it the memoised row
+  // would keep showing the old text. Other rows' versions don't move,
+  // so their previews are not recomputed (perf step 10).
   const remarksPreview = useMemo(() => getRemarksPreview(trade.id), [trade.id, remarksVersion]);
 
   // Resolved label (localStorage > static)
@@ -910,10 +912,13 @@ export default function WeeklyJournal() {
     }
   };
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
-  // Bumped when the remarks modal closes, so the memoised WeekRow
-  // re-reads the remarks it just saved (the modal writes to storage
-  // directly, and no other prop of the row changes on close).
-  const [remarksVersion, setRemarksVersion] = useState(0);
+  // Per-week versions (perf step 10): bumped for ONE week when its
+  // remarks modal closes, so only that memoised WeekRow re-reads the
+  // remarks it just saved (the modal writes to storage directly, and no
+  // other prop of the row changes on close). Previously a single global
+  // counter was passed to every row, so closing any modal recomputed
+  // every row's preview.
+  const [remarksVersions, setRemarksVersions] = useState({});
   // Bumped when a batch of thumbnails streams in (perf step 6), so the
   // memoised rows re-read getStoredThumb and cells fill in as their
   // thumbnails arrive — same pattern as remarksVersion.
@@ -1325,7 +1330,7 @@ export default function WeeklyJournal() {
     <>
       {/* ── Remarks modal ── */}
       {remarksModal && (
-        <RemarksModal trade={remarksModal} onClose={() => { setRemarksModal(null); setRemarksVersion((v) => v + 1); }} />
+        <RemarksModal trade={remarksModal} onClose={() => { setRemarksVersions((prev) => ({ ...prev, [remarksModal.id]: (prev[remarksModal.id] ?? 0) + 1 })); setRemarksModal(null); }} />
       )}
 
       {/* ── Settings modal ── */}
@@ -1567,7 +1572,7 @@ export default function WeeklyJournal() {
                               search={search}
                               gridCols={gridTemplateColumns}
                               searchHits={searchHits}
-                              remarksVersion={remarksVersion}
+                              remarksVersion={remarksVersions[trade.id] ?? 0}
                               thumbsVersion={thumbsVersion}
                             />
                           )}
