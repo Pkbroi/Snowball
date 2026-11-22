@@ -2,11 +2,15 @@ import { test, expect } from '@playwright/test';
 import { ensureNotesEditor } from './helpers/notes-editor.js';
 
 // Lazy Quill (perf step 8): the editor chunk loads only when the notes
-// section is needed. Short viewport so the notes section starts below
-// the fold — otherwise the IntersectionObserver would mount it on load.
+// section is needed. Short viewport so the notes section starts outside
+// the IntersectionObserver's 200px rootMargin — measured: with no chart
+// uploaded, the section top sits ~605px down, so a 320px viewport keeps
+// the trigger line (320 + 200 = 520) well above it. (A 500px viewport
+// was tried first, but 500 + 200 = 700 already covers 605, so the
+// observer fired on load and the chunk raced the "not loaded" assertion.)
 test.describe('Lazy Quill editor (perf step 8)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.setViewportSize({ width: 1280, height: 320 });
     await page.goto('/');
     await page.getByTestId('add-week-btn').click();
     await page.locator('[data-testid^="day-cell-"]').first().dblclick();

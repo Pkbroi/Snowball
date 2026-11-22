@@ -904,13 +904,48 @@ export default function WeeklyJournal() {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const search = searchParams.get('q') || '';
-  const setSearch = (val) => {
+  const setSearch = useCallback((val) => {
     if (val) {
       setSearchParams({ q: val });
     } else {
       setSearchParams({});
     }
-  };
+  }, [setSearchParams]);
+
+  // Debounced search input (perf step 11): the input updates instantly
+  // (the draft is local state), but the URL query — which drives the
+  // searchHits index + row filtering — is written 100ms after the user
+  // stops typing, so a fast typist doesn't pay a full index rebuild +
+  // re-render per keystroke. The results are identical, just ~100ms
+  // later. The × button clears immediately (no debounce on a clear),
+  // and the draft follows the URL when it changes elsewhere (back /
+  // forward navigation, dataset switch) — unless a commit is pending,
+  // in which case the pending commit wins within 100ms anyway.
+  const [searchDraft, setSearchDraft] = useState(search);
+  const searchTimerRef = useRef(null);
+  const handleSearchChange = useCallback((val) => {
+    setSearchDraft(val);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      searchTimerRef.current = null;
+      setSearch(val);
+    }, 100);
+  }, [setSearch]);
+  const clearSearch = useCallback(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchDraft('');
+    setSearch('');
+  }, [setSearch]);
+  useEffect(() => {
+    if (searchTimerRef.current) return;
+    setSearchDraft(search);
+  }, [search]);
+  useEffect(() => () => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+  }, []);
   const [remarksModal, setRemarksModal] = useState(null);  // trade object | null
   // Per-week versions (perf step 10): bumped for ONE week when its
   // remarks modal closes, so only that memoised WeekRow re-reads the
@@ -1355,13 +1390,13 @@ export default function WeeklyJournal() {
                 <input
                   type="text"
                   data-testid="search-input"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchDraft}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   className="w-full bg-black rounded-full border border-black py-1.5 pl-9 pr-8 text-white font-bold placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
                   placeholder="Search remarks, notes, dates…"
                 />
-                {search && (
-                  <button onClick={() => setSearch('')}
+                {searchDraft && (
+                  <button onClick={clearSearch}
                     className="absolute right-2 text-white hover:text-primary transition-colors">
                     <span className="material-symbols-outlined text-[16px]">close</span>
                   </button>

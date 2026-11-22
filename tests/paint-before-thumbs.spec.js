@@ -46,7 +46,9 @@ test.describe('Paint before thumbnails (perf step 6)', () => {
     const imgsAtPaint = await page.locator('[data-testid^="day-cell-"] img').count();
     expect(imgsAtPaint).toBeLessThan(20);
 
-    // …and they all stream in afterwards.
-    await expect(page.locator('[data-testid^="day-cell-"] img')).toHaveCount(20, { timeout: 20000 });
+    // …and they all stream in afterwards. Generous timeout: 20 worker
+    // derivations on a loaded suite machine take a while, and the spec's
+    // point is that they all arrive, not how fast.
+    await expect(page.locator('[data-testid^="day-cell-"] img')).toHaveCount(20, { timeout: 60000 });
   });
 });
