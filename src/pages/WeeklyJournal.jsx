@@ -6,7 +6,7 @@ import 'react-quill-new/dist/quill.snow.css';
 import { trades } from '../data/trades.js';
 import {
   setStoredImg, getStoredImgAsync,
-  getStoredImg, getStoredThumb,
+  getStoredImg, getStoredThumb, revokeThumbUrl,
   getRemarks, setRemarks, getRemarksText, getRemarksPreview,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, getNotesText, deleteWeekData,
@@ -142,6 +142,17 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     const current = getStoredThumb(weekId, day.day) || day.img || null;
     setCellImg(current);
   }, [weekId, day.day, day.img, thumbsVersion]);
+
+  // Lazy thumbnail URLs (perf step 7): when this row scrolls out of
+  // view Virtuoso unmounts it — drop its object URL so off-screen
+  // thumbnails don't stay in memory. The blob stays cached, so the URL
+  // is re-created on the next mount. Skipped while the detail page is
+  // open: goToDetail may have handed this very URL to the detail page
+  // as its image fallback, and revoking it would blank that image.
+  // (HashRouter keeps the route in location.hash: '#/trade/…'.)
+  useEffect(() => () => {
+    if (!window.location.hash.startsWith('#/trade/')) revokeThumbUrl(weekId, day.day);
+  }, [weekId, day.day]);
 
   // matchesSearch comes from the parent's search index (built once per
   // search change, see searchHits below) — this cell never runs

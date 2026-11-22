@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getTags, setTags, initStorage, formatDatabase } from './storage';
 import { clear } from 'idb-keyval';
 
@@ -551,5 +551,51 @@ describe('Thumbnail streaming — paint before thumbnails (perf step 6)', () => 
     unsubscribe();
     await storage.loadThumbnails();
     expect(notifications).toBe(0);
+  });
+});
+
+describe('Lazy thumbnail object URLs (perf step 7)', () => {
+  beforeEach(async () => {
+    await clear();
+    await initStorage();
+  });
+
+  const redPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('getStoredThumb creates the URL lazily; revokeThumbUrl drops it and the next read re-creates it', async () => {
+    const storage = await import('./storage');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await storage.setStoredImg('week-l', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+
+    const first = storage.getStoredThumb('week-l', 'Monday');
+    expect(first).toBeTruthy();
+    expect(first.startsWith('blob:')).toBe(true);
+    // Second read reuses the same URL — one URL per visible row.
+    expect(storage.getStoredThumb('week-l', 'Monday')).toBe(first);
+
+    storage.revokeThumbUrl('week-l', 'Monday');
+    const second = storage.getStoredThumb('week-l', 'Monday');
+    expect(second).toBeTruthy();
+    expect(second.startsWith('blob:')).toBe(true);
+    // A fresh URL after the revoke: the blob survived, the URL did not.
+    expect(second).not.toBe(first);
+  });
+
+  it('switching datasets revokes the previous dataset\'s thumbnail URLs', async () => {
+    const storage = await import('./storage');
+    const bytes = Uint8Array.from(atob(redPng.split(',')[1]), (c) => c.charCodeAt(0));
+    await storage.setStoredImg('week-l', 'Monday', new File([bytes], 'chart.png', { type: 'image/png' }));
+    const url = storage.getStoredThumb('week-l', 'Monday');
+    expect(url.startsWith('blob:')).toBe(true);
+
+    const revoked = [];
+    const spy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation((u) => { revoked.push(u); });
+    try {
+      const bank = await storage.createDataset('Bank Nifty', 2026);
+      await storage.switchDataset(bank.id);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(revoked).toContain(url);
   });
 });

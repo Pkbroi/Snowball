@@ -22,6 +22,34 @@ import { get, set, del, keys, entries, clear } from 'idb-keyval';
 
 const memCache = new Map();
 
+/* ─── Lazy thumbnail object URLs (perf step 7) ───
+ * memCache holds thumbnail BLOBS; object URLs are created lazily by
+ * getStoredThumb (one per visible row) and kept in thumbUrlCache.
+ * When a row scrolls out of view Virtuoso unmounts it and the DayCell
+ * cleanup revokes that row's URL (revokeThumbUrl) — off-screen thumbs
+ * stop occupying blob-URL slots. The blob stays cached, so the URL is
+ * re-created cheaply on the next mount. Dataset switches and week
+ * deletes revoke every cached URL (revokeAllThumbUrls / deleteWeekData).
+ * The URL cache is separate from memCache on purpose: memCache is the
+ * canonical data (blobs), thumbUrlCache is purely a view-layer cache. */
+const thumbUrlCache = new Map();
+/** Revoke the cached object URL for one cell's thumbnail, if any. */
+export const revokeThumbUrl = (weekId, dayName) => {
+  revokeThumbUrlByKey(thumbKey(weekId, dayName));
+};
+const revokeThumbUrlByKey = (key) => {
+  const url = thumbUrlCache.get(key);
+  if (url) {
+    revokeBlobUrl(url);
+    thumbUrlCache.delete(key);
+  }
+};
+/** Revoke every cached thumbnail URL (dataset switch / cache clear). */
+const revokeAllThumbUrls = () => {
+  for (const url of thumbUrlCache.values()) revokeBlobUrl(url);
+  thumbUrlCache.clear();
+};
+
 /* ─── Thumbnail streaming (perf step 6) ───
  * initStorage resolves after the metadata phase; thumbnails load
  * afterwards in the background and subscribers are notified per batch
@@ -591,6 +619,7 @@ export const initStorage = async (onProgress) => {
   // Revoke the previous dataset's blob URLs before dropping the cache,
   // otherwise every index/year switch leaks thumbnail URLs.
   for (const url of memCache.values()) revokeBlobUrl(url);
+  revokeAllThumbUrls();
   memCache.clear();
   memCache.set('sb_datasets', datasets);
 
@@ -647,10 +676,9 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
     if (generation !== thumbGeneration) return;
     await Promise.all(thumbKeys.slice(i, i + 8).map(async (key) => {
       const val = await get(key);
-      if (val) {
-        const url = val instanceof Blob ? URL.createObjectURL(val) : val;
-        memCache.set(key, url);
-      }
+      // Cache the BLOB, not an object URL (perf step 7): the URL is
+      // created lazily by getStoredThumb for visible rows only.
+      if (val) memCache.set(key, val);
     }));
     if (generation !== thumbGeneration) return;
     if (onProgress) onProgress(Math.min(i + 8, thumbKeys.length), thumbKeys.length);
@@ -680,10 +708,10 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
         try {
           const tBlob = await createThumbnail(val);
           if (tBlob && tBlob instanceof Blob) {
-            const thumbUrl = URL.createObjectURL(tBlob);
-            const prevThumb = memCache.get(tKey);
-            memCache.set(tKey, thumbUrl);
-            if (prevThumb && prevThumb !== url) revokeBlobUrl(prevThumb);
+            // Cache the blob (perf step 7); the old URL for this cell, if
+            // any, is revoked so it doesn't linger after replacement.
+            revokeThumbUrlByKey(tKey);
+            memCache.set(tKey, tBlob);
             set(tKey, tBlob).catch(() => {});
           }
         } catch {
@@ -720,10 +748,23 @@ export const loadThumbnails = async (onProgress, generation = thumbGeneration) =
   }
 };
 
-/** Synchronous, instantaneous thumbnail retrieval for the journal grid */
+/** Synchronous, instantaneous thumbnail retrieval for the journal grid.
+ *  The thumbnail blob is cached; its object URL is created lazily on
+ *  first read (perf step 7) and revoked when the row unmounts, so only
+ *  visible rows hold blob URLs. Legacy string values (data URLs) are
+ *  returned as-is. */
 export const getStoredThumb = (weekId, dayName) => {
   const t = memCache.get(thumbKey(weekId, dayName));
   if (t === 'DELETED') return null;
+  if (t instanceof Blob) {
+    const k = thumbKey(weekId, dayName);
+    let url = thumbUrlCache.get(k);
+    if (!url) {
+      url = URL.createObjectURL(t);
+      thumbUrlCache.set(k, url);
+    }
+    return url;
+  }
   if (t) return t;
   const img = memCache.get(imgKey(weekId, dayName));
   if (img === 'DELETED') return null;
@@ -852,7 +893,10 @@ export const setStoredImg = async (weekId, dayName, val) => {
   if (!blob) return null;
 
   revokeBlobUrl(memCache.get(kImg));
-  revokeBlobUrl(memCache.get(kThumb));
+  // The old thumbnail URL for this cell, if one was created for a
+  // visible row, is revoked here — a fresh URL is made lazily from the
+  // new blob on the next getStoredThumb (perf step 7).
+  revokeThumbUrl(weekId, dayName);
   revokeBlobUrl(memCache.get(kMed));
   memCache.delete(kMed);
   const displayUrl = URL.createObjectURL(blob);
@@ -889,10 +933,11 @@ export const setStoredImg = async (weekId, dayName, val) => {
     memCache.set(kMeta, meta);
     scheduleWeekSave(weekId); // image meta lives in the week document now
 
-    // Thumbnail for the grid ONLY (awaited, as before).
+    // Thumbnail for the grid ONLY (awaited, as before). The blob is
+    // cached; its object URL is created lazily by getStoredThumb for
+    // visible rows (perf step 7).
     try {
-      const thumbUrl = URL.createObjectURL(all.thumb);
-      memCache.set(kThumb, thumbUrl);
+      memCache.set(kThumb, all.thumb);
       await set(kThumb, all.thumb);
     } catch (e) {
       console.warn('Could not generate thumbnail:', e);
@@ -927,12 +972,13 @@ export const setStoredImg = async (weekId, dayName, val) => {
       // metadata is best-effort; the image itself is already saved
     }
 
-    // Create and save optimised thumbnail for the grid ONLY.
+    // Create and save optimised thumbnail for the grid ONLY. The blob
+    // is cached; its object URL is created lazily by getStoredThumb for
+    // visible rows (perf step 7).
     try {
       const thumb = await createThumbnail(blob);
       if (thumb && thumb instanceof Blob) {
-        const thumbUrl = URL.createObjectURL(thumb);
-        memCache.set(kThumb, thumbUrl);
+        memCache.set(kThumb, thumb);
         await set(kThumb, thumb);
       }
     } catch (e) {
@@ -957,7 +1003,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
 
 export const clearStoredImg = (weekId, dayName) => {
   revokeBlobUrl(memCache.get(imgKey(weekId, dayName)));
-  revokeBlobUrl(memCache.get(thumbKey(weekId, dayName)));
+  revokeThumbUrl(weekId, dayName);
   revokeBlobUrl(memCache.get(medKey(weekId, dayName)));
   memCache.delete(imgKey(weekId, dayName));
   memCache.delete(thumbKey(weekId, dayName));
@@ -1083,6 +1129,7 @@ export const deleteWeekData = (weekId) => {
     del(notesKey(weekId, dayName));
     memCache.delete(imgKey(weekId, dayName));
     del(imgKey(weekId, dayName));
+    revokeThumbUrl(weekId, dayName);
     memCache.delete(thumbKey(weekId, dayName));
     del(thumbKey(weekId, dayName));
     memCache.delete(medKey(weekId, dayName));
@@ -1388,6 +1435,7 @@ export const formatDatabase = async () => {
     allKeys.filter(k => typeof k === 'string' && k.startsWith(p)),
     (k) => del(k), 16,
   );
+  revokeAllThumbUrls();
   memCache.clear();
   await initStorage();
 };
@@ -1421,6 +1469,7 @@ export const deleteIndex = async (index) => {
   const nextCurrent = doomedIds.has(currentDatasetId) ? remaining[0].id : currentDatasetId;
   currentDatasetId = nextCurrent;
   await set('sb_current_dataset', nextCurrent);
+  revokeAllThumbUrls();
   memCache.clear();
   await initStorage();
   return getCurrentDataset();
