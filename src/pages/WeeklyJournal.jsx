@@ -10,7 +10,7 @@ import {
   getExtraWeeks, setExtraWeeks, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
-  subscribeThumbs, resolveMediumAsync, getSearchIndex,
+  subscribeThumbs, resolveMediumAsync, getSearchIndex, flushWeekDoc,
   hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction
 } from '../data/storage.js';
 
@@ -535,13 +535,14 @@ function SettingsModal({ onClose }) {
       setOp({ status: 'importing', step: 'Reading file…', done: 0, total: 0 });
       await new Promise(r => setTimeout(r, 0));
 
-      const text = await file.text();
-
       setOp(s => ({ ...s, step: 'Parsing backup data…' }));
-      // Yield before the synchronous JSON.parse so the UI can update
+      // Yield before the import so the UI can update. The File itself
+      // is passed in: importDatabase transfers its bytes to the worker
+      // (zero-copy) instead of turning the whole backup into a
+      // main-thread string first.
       await new Promise(r => setTimeout(r, 0));
 
-      await importDatabase(text, (done, total) => {
+      await importDatabase(file, (done, total) => {
         setOp(s => ({
           ...s,
           step: `Restoring images… ${done} / ${total}`,
@@ -1437,7 +1438,7 @@ export default function WeeklyJournal() {
     <>
       {/* ── Remarks modal ── */}
       {remarksModal && (
-        <RemarksModal trade={remarksModal} onClose={() => { setRemarksVersions((prev) => ({ ...prev, [remarksModal.id]: (prev[remarksModal.id] ?? 0) + 1 })); setRemarksModal(null); }} />
+        <RemarksModal trade={remarksModal} onClose={() => { flushWeekDoc(remarksModal.id); setRemarksVersions((prev) => ({ ...prev, [remarksModal.id]: (prev[remarksModal.id] ?? 0) + 1 })); setRemarksModal(null); }} />
       )}
 
       {/* ── Settings modal ── */}

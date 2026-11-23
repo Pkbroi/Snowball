@@ -34,6 +34,12 @@ async function reopenCell(page) {
 
 test.describe('Notes pictures', () => {
   test('right-click selects the picture: dotted outline, handles, delete button', async ({ page }) => {
+    // First mount in the file: pays the cold Vite transform of the
+    // detail-page + Quill chunks, which is slow under load — the
+    // default 30s test timeout is not enough room for the helper's
+    // waits. (test.setTimeout inside the body is the pattern that
+    // works in this repo; the 2nd-arg form does not take effect.)
+    test.setTimeout(120000);
     const { editor, img } = await openDetailWithNotesImage(page);
     const box = await img.boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
@@ -64,6 +70,7 @@ test.describe('Notes pictures', () => {
   });
 
   test('dragging a corner handle resizes the picture and the size persists', async ({ page }) => {
+    test.setTimeout(120000);
     const { editor, img } = await openDetailWithNotesImage(page);
     const before = await img.evaluate((el) => ({ w: el.offsetWidth, h: el.offsetHeight }));
     expect(before.w).toBe(800);
@@ -92,6 +99,7 @@ test.describe('Notes pictures', () => {
   });
 
   test('left-click still shows the resize overlay', async ({ page }) => {
+    test.setTimeout(120000);
     const { img } = await openDetailWithNotesImage(page);
     await img.click();
     await expect(page.getByTestId('notes-img-overlay')).toBeVisible();
