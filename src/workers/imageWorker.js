@@ -14,9 +14,40 @@
  *     times (dimensions + thumb + medium used to be three decodes).
  * The worker NEVER touches the original — it only ever receives a Blob
  * and returns smaller derived Blobs (thumbnail / medium).
+ *
+ * A third message, off the same worker so no second worker is spawned:
+ *   { id, parseBackup: true, buffer, currentDataset, datasets,
+ *     defaultDatasetId } → { id, otherEntries, imageBlobs,
+ *     importTargetId, wipeAll, wipePrefix }
+ *     parse + validate + normalise + base64-decode a whole backup
+ *     (see src/data/backupParse.js) — the import path, so a large
+ *     backup's JSON.parse and image decode never block the main thread.
+ *     `buffer` is the backup's bytes TRANSFERRED here (zero-copy), so
+ *     the main thread never clones the huge string — sending a string
+ *     would cost ~300 ms of main-thread structured-clone for 160 MB.
+ *     The worker decodes the text itself (TextDecoder, off-thread).
+ *     A backup that fails validation answers { id, parseError } (not
+ *     `error`): the caller must surface that message, NOT fall back to
+ *     the main thread and re-parse — the backup is invalid either way.
+ *     A real worker failure still answers { id, error } and the caller
+ *     falls back to the main-thread parse.
  */
+import { parseBackup } from '../data/backupParse.js';
+
 self.onmessage = async (e) => {
-  const { id, blob, maxDim, quality, deriveAll } = e.data || {};
+  const { id, blob, maxDim, quality, deriveAll, parseBackup: doParse, buffer, currentDataset, datasets, defaultDatasetId } = e.data || {};
+  if (doParse) {
+    try {
+      // The backup arrives as transferred bytes; decode the text here,
+      // off the main thread, then run the shared parser.
+      const jsonString = new TextDecoder().decode(buffer);
+      const parsed = await parseBackup(jsonString, { currentDataset, datasets, defaultDatasetId });
+      self.postMessage({ id, ...parsed });
+    } catch (err) {
+      self.postMessage({ id, parseError: String(err && err.message ? err.message : err) });
+    }
+    return;
+  }
   try {
     if (!blob || typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') {
       throw new Error('worker image APIs unavailable');
