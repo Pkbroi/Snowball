@@ -321,6 +321,16 @@ export default function TradeDetail() {
   // jank. The full original is only decoded for the lightbox.
   const [mediumImg, setMediumImg] = useState(null);
   const [mediumLoaded, setMediumLoaded] = useState(false);
+  // Image generation (bug 7): every async image continuation checks
+  // this epoch before touching state. The image-load effect bumps it
+  // on each run (navigation / a new trade), deleteChart bumps it, and
+  // persistChart captures it at the start of an upload — so a load
+  // that resolves after a delete, or an uploaded medium that lands
+  // after the user moved to another day, is dropped instead of
+  // resurrecting the old chart or landing on the wrong day. The
+  // effect's `cancelled` flag alone could not cover a delete: the
+  // effect never re-runs for one, so its continuations stayed live.
+  const imgGenRef = useRef(0);
   // Whether any image tier is in hand. The chart container, the
   // Original badge and the double-click-to-expand gate must use this,
   // not chartImg alone: on a reload or deep link (bug 5) there is no
@@ -777,6 +787,7 @@ export default function TradeDetail() {
   // blurred placeholder until the medium lands.
   useEffect(() => {
     let cancelled = false;
+    const gen = ++imgGenRef.current;
     setFullImg(null);
     setFullLoaded(false);
     setMediumImg(null);
@@ -788,8 +799,16 @@ export default function TradeDetail() {
       const img = new Image();
       img.decoding = 'async';
       img.onload = () => {
-        if (cancelled) return;
-        const done = () => onReady(url);
+        if (cancelled || gen !== imgGenRef.current) return;
+        // The decode is async: re-check the generation when it
+        // resolves, not just when the load fires. Without this a
+        // delete landing between onload and decode-resolve let the
+        // stale tier through (bug 7, found by the noise-image spec:
+        // storage was empty yet the container reappeared).
+        const done = () => {
+          if (cancelled || gen !== imgGenRef.current) return;
+          onReady(url);
+        };
         if (typeof img.decode === 'function') img.decode().then(done).catch(done);
         else done();
       };
@@ -799,14 +818,14 @@ export default function TradeDetail() {
 
     // Medium first — fast, and what the user actually sees inline.
     resolveMediumAsync(weekId, dayName).then((medUrl) => {
-      if (cancelled || !medUrl) return;
+      if (cancelled || gen !== imgGenRef.current || !medUrl) return;
       if (medUrl === placeholder) { setMediumImg(medUrl); setMediumLoaded(true); return; }
       preload(medUrl, (url) => { setMediumImg(url); setMediumLoaded(true); });
     }).catch(() => {});
 
     // Full original — for the lightbox only; also refreshes metadata.
     getStoredImgAsync(weekId, dayName).then((url) => {
-      if (cancelled || !url) return;
+      if (cancelled || gen !== imgGenRef.current || !url) return;
       setImgMeta(getImageMeta(weekId, dayName));
       if (url === placeholder) { setFullImg(url); setFullLoaded(true); return; }
       preload(url, (u) => {
@@ -822,6 +841,10 @@ export default function TradeDetail() {
 
   /* ── Save chart image to localStorage + state ── */
   const persistChart = useCallback(async (fileOrDataUrl) => {
+    // Generation captured up front: if the user deletes the chart or
+    // moves to another day while the upload is still in flight, the
+    // epoch has moved on and this upload must not touch state (bug 7).
+    const gen = imgGenRef.current;
     // Files/Blobs go straight to setStoredImg(), which stores the original
     // Blob losslessly. Do NOT run them through fileToDataUrl() first:
     // that used to compress them (max 1920px / 1MB) before storage.
@@ -832,15 +855,18 @@ export default function TradeDetail() {
       // Without this the inline chart stayed on the full 2560px image
       // after every upload, defeating the whole medium tier.
       resolveMediumAsync(weekId, dayName).then((medUrl) => {
+        if (gen !== imgGenRef.current) return;
         if (medUrl) { setMediumImg(medUrl); setMediumLoaded(true); }
       }).catch(() => {});
     };
     if (fileOrDataUrl instanceof File || fileOrDataUrl instanceof Blob) {
       const url = await setStoredImg(weekId, dayName, fileOrDataUrl);
+      if (gen !== imgGenRef.current) return;
       if (url) applyUpload(url);
     } else {
       const dataUrl = fileOrDataUrl;
       const url = await setStoredImg(weekId, dayName, dataUrl);
+      if (gen !== imgGenRef.current) return;
       if (url) applyUpload(url);
     }
     triggerSaveIndicator();
@@ -848,6 +874,10 @@ export default function TradeDetail() {
 
   /* ── Delete main chart ── */
   const deleteChart = useCallback(async () => {
+    // Bump the image generation FIRST: any load or upload still in
+    // flight belongs to the old chart and must not set state once it
+    // resolves (bug 7 — a deleted chart reappearing ~100–500ms later).
+    imgGenRef.current++;
     // UI updates first so the chart disappears instantly; the storage
     // delete is awaited afterwards, and the pending week-document save
     // (which drops the image meta) is flushed too — a reload in the same
@@ -949,7 +979,16 @@ export default function TradeDetail() {
   const addTag = (e) => {
     if (e.key === 'Enter' && tagInput.trim()) {
       e.preventDefault();
-      const newTags = [...tags, tagInput.trim()];
+      const tag = tagInput.trim();
+      // Bug 11: ignore a tag that already exists (case-insensitive) —
+      // "gapup" then "GapUp" used to land as two chips, and removeTag
+      // then removed all matches at once. Still clear the input, so
+      // the user isn't left holding the rejected text.
+      if (tags.some((t) => t.toLowerCase() === tag.toLowerCase())) {
+        setTagInput('');
+        return;
+      }
+      const newTags = [...tags, tag];
       setTagsState(newTags);
       setTags(weekId, dayName, newTags);
       setTagInput('');
@@ -1135,8 +1174,17 @@ export default function TradeDetail() {
                       className={`absolute rounded ${selected ? 'ring-2 ring-white/70' : ''}`}
                       style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined }}
                       onPointerDown={(e) => {
-                        e.stopPropagation();
-                        if (annTool === 'select' && e.button === 0 && !e.target.closest('textarea')) onAnnPointerDown(e, a);
+                        // Bug 8: swallow the event only in select mode,
+                        // where the box itself handles the pointer
+                        // (drag-to-move, text editing). With a draw tool
+                        // armed, let it bubble to the overlay so the
+                        // mark is placed / the pencil stroke starts at
+                        // the click; the overlay preventDefaults, so the
+                        // textarea never steals focus for the tool.
+                        if (annTool === 'select') {
+                          e.stopPropagation();
+                          if (e.button === 0 && !e.target.closest('textarea')) onAnnPointerDown(e, a);
+                        }
                       }}
                       onMouseDown={(e) => {
                         e.stopPropagation();
