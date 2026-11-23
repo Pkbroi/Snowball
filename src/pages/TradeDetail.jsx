@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect, useMemo, lazy, Suspense } fro
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls } from '../data/storage.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
 // (perf step 8) — see the mount logic in TradeDetail below. TradeDetail
@@ -781,6 +781,12 @@ export default function TradeDetail() {
     }
   }, [trade, weekId, dayName]);
 
+  // Perf 3: week-doc saves are debounced 500ms, so leaving the detail
+  // page flushes the pending save for this week — a fast navigation
+  // must not lose the last keystrokes. Fire-and-forget: the write
+  // starts synchronously and completes in the background.
+  useEffect(() => () => { flushWeekDoc(weekId); }, [weekId]);
+
   // Load images in tiers: medium (1600px) first for the inline chart,
   // then the full original for the lightbox. Each tier swaps in only after
   // it has decoded, so there is no flicker. The thumbnail stays as the
@@ -836,7 +842,14 @@ export default function TradeDetail() {
         preloadNeighbourImages(weekId, dayName);
       });
     }).catch(() => { /* keep the thumbnail placeholder */ });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // Perf 2: leaving the detail page (or the day changing) drops
+      // this day's full + medium object URLs — the IndexedDB Blobs
+      // stay, so the next visit re-creates them on demand. Without
+      // this every visit leaked both tiers (~15–30 MB over 30 visits).
+      evictDetailImageUrls(weekId, dayName);
+    };
   }, [weekId, dayName, trade?.day?.img]);
 
   /* ── Save chart image to localStorage + state ── */

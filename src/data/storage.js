@@ -1,4 +1,5 @@
 import { get, set, del, keys, entries, clear } from 'idb-keyval';
+import { dataURLtoBlob, parseBackup } from './backupParse.js';
 
 /**
  * Snowball persistence helpers using idb-keyval (IndexedDB)
@@ -146,21 +147,6 @@ const revokeBlobUrl = (url) => {
     try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
   }
 };
-
-/**
- * Convert a data-URL string directly to a Blob using atob + Uint8Array.
- * Function declaration so it is hoisted for use by getStoredImgAsync below.
- * (Previously defined only near the export helpers, below its first use.)
- */
-function dataURLtoBlob(dataURL) {
-  const comma = dataURL.indexOf(',');
-  const mime = dataURL.slice(5, dataURL.indexOf(';'));
-  const b64 = dataURL.slice(comma + 1);
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
 
 /**
  * Run async tasks with limited concurrency to avoid overwhelming the IndexedDB
@@ -320,11 +306,22 @@ const buildWeekDoc = (weekId) => {
   return doc;
 };
 
-// Per-week save chains: at most one queued write per week, each write
-// re-reading memCache when it runs, so overlapping edits can never
-// overwrite each other (the classic read-modify-write lost update).
-// A failed write must not break the chain for later saves.
+// Per-week save chains, trailing-debounced (perf 3): notes and
+// remarks used to write the whole week document once per keystroke
+// (20 keystrokes → 20 IndexedDB puts of the same document). Now every
+// edit only (re)starts a 500ms timer; the write runs once, 500ms
+// after the last edit, and re-reads memCache when it runs, so
+// overlapping edits can never overwrite each other (the classic
+// read-modify-write lost update). A failed write must not break the
+// chain for later saves.
+// The debounce is safe because every exit is flushed: the detail
+// page and the remarks modal flush on close, switch / export /
+// import / wipe flush before they act, and a page unload flushes
+// synchronously (below) — so a fast reload or navigation cannot lose
+// the last keystrokes.
+const WEEK_SAVE_DEBOUNCE_MS = 500;
 const weekSaveState = new Map(); // weekId -> { queued, chain }
+const weekSaveTimers = new Map(); // weekId -> timeout id (pending debounce)
 const weekSaveDead = new Set(); // weekIds deleted while a save was queued
 const writeWeekDoc = async (weekId) => {
   if (weekSaveDead.has(weekId)) return;
@@ -333,9 +330,11 @@ const writeWeekDoc = async (weekId) => {
   if (doc) await set(wkKey(weekId), doc);
   else await del(wkKey(weekId));
 };
-const scheduleWeekSave = (weekId) => {
+/** Queue the write for one week now (timer fired, or an explicit flush). */
+const firePendingSave = (weekId) => {
+  const t = weekSaveTimers.get(weekId);
+  if (t != null) { clearTimeout(t); weekSaveTimers.delete(weekId); }
   if (weekSaveDead.has(weekId)) return;
-  bumpSearchDataVersion(); // searchable text may have changed (round-2 improvement 2)
   let st = weekSaveState.get(weekId);
   if (!st) {
     st = { queued: false, chain: Promise.resolve() };
@@ -348,14 +347,100 @@ const scheduleWeekSave = (weekId) => {
     await writeWeekDoc(weekId);
   }).catch((e) => console.warn('week-doc save failed:', e));
 };
-/** Await any pending document save for one week. */
+const scheduleWeekSave = (weekId) => {
+  if (weekSaveDead.has(weekId)) return;
+  bumpSearchDataVersion(); // searchable text may have changed (round-2 improvement 2)
+  // Trailing debounce: reset the timer on every edit; the write runs
+  // once, 500ms after the last edit.
+  const prev = weekSaveTimers.get(weekId);
+  if (prev != null) clearTimeout(prev);
+  weekSaveTimers.set(weekId, setTimeout(() => firePendingSave(weekId), WEEK_SAVE_DEBOUNCE_MS));
+};
+/** Await any pending document save for one week (fires a pending debounce first). */
 export const flushWeekDoc = async (weekId) => {
+  firePendingSave(weekId);
   const st = weekSaveState.get(weekId);
   if (st) await st.chain;
 };
 /** Await every pending document save (export, wipe, switch, import). */
 export const flushAllWeekDocs = async () => {
+  for (const weekId of new Set([...weekSaveState.keys(), ...weekSaveTimers.keys()])) firePendingSave(weekId);
   await Promise.all([...weekSaveState.values()].map((st) => st.chain));
+};
+/** Synchronous unload flush: start every pending week-doc write NOW.
+ *  Called from beforeunload / visibilitychange — the write is started
+ *  synchronously (writeWeekDoc runs to its first await, the IndexedDB
+ *  put, before returning), because a pending timer would only fire as
+ *  a task the page may not live to see. A chain step already queued
+ *  runs as a microtask, which drains after the unload handler. */
+/** Synchronous unload stash (perf 3): IndexedDB writes started during
+ *  unload are NOT guaranteed to commit before the page is discarded —
+ *  under load the put simply never lands (seen: a fast reload after
+ *  typing lost the notes even though the flush had started the write).
+ *  localStorage.setItem IS synchronous, so the pending week docs are
+ *  stashed there at unload time; the next initStorage replays them into
+ *  IndexedDB before anything reads the week docs. The stash is a backup
+ *  — the flush above still tries the IndexedDB write first, and the
+ *  replay is idempotent (same doc, same key), so a write that did
+ *  commit is just written again. */
+const PENDING_WEEK_SAVES_KEY = 'sb_pending_week_saves';
+const stashPendingWeekSavesSync = () => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const entries = {};
+    let any = false;
+    for (const weekId of new Set([...weekSaveTimers.keys(), ...weekSaveState.keys()])) {
+      const st = weekSaveState.get(weekId);
+      if (!weekSaveTimers.has(weekId) && !st?.queued) continue;
+      if (weekSaveDead.has(weekId)) continue;
+      entries[wkKey(weekId)] = buildWeekDoc(weekId); // null = delete the doc
+      any = true;
+    }
+    if (!any) return;
+    localStorage.setItem(PENDING_WEEK_SAVES_KEY, JSON.stringify(entries));
+  } catch { /* best effort — the IndexedDB flush is the primary path */ }
+};
+/** Replay the unload stash into IndexedDB (runs at the top of
+ *  initStorage, before the week docs are read). The key is removed
+ *  only after a successful replay, so a failure retries next load. */
+const replayPendingWeekSaves = async () => {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const raw = localStorage.getItem(PENDING_WEEK_SAVES_KEY);
+    if (!raw) return;
+    let entries;
+    try {
+      entries = JSON.parse(raw);
+    } catch {
+      localStorage.removeItem(PENDING_WEEK_SAVES_KEY);
+      return;
+    }
+    for (const [key, doc] of Object.entries(entries)) {
+      if (doc) await set(key, doc);
+      else await del(key);
+    }
+    localStorage.removeItem(PENDING_WEEK_SAVES_KEY);
+  } catch (e) {
+    console.warn('pending week-save replay failed:', e);
+  }
+};
+const flushPendingWeekSavesSync = () => {
+  stashPendingWeekSavesSync();
+  for (const weekId of [...weekSaveTimers.keys()]) {
+    const t = weekSaveTimers.get(weekId);
+    if (t != null) { clearTimeout(t); weekSaveTimers.delete(weekId); }
+    if (weekSaveDead.has(weekId)) continue;
+    writeWeekDoc(weekId).catch(() => {});
+  }
+};
+let weekSaveFlushRegistered = false;
+const setupWeekSaveFlush = () => {
+  if (weekSaveFlushRegistered || typeof window === 'undefined' || typeof document === 'undefined') return;
+  weekSaveFlushRegistered = true;
+  window.addEventListener('beforeunload', flushPendingWeekSavesSync);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingWeekSavesSync();
+  });
 };
 
 /** Parse an old-format per-key metadata key into { weekId, field, day }. */
@@ -484,18 +569,24 @@ const getImageWorker = () => {
 };
 
 /** One worker round trip, returning the worker's raw reply object.
- *  Shared by the single-derivative and derive-all calls below. */
-const callWorker = (payload) => new Promise((resolve, reject) => {
+ *  Shared by the single-derivative and derive-all calls below, and by
+ *  the backup-parse call (which passes a longer timeout — parsing and
+ *  decoding a large backup off-thread can take well over the 10s the
+ *  image calls use). `transfer` is an optional list of transferable
+ *  objects (e.g. an ArrayBuffer) handed to postMessage so the bytes
+ *  move to the worker zero-copy instead of being cloned. */
+const callWorker = (payload, timeoutMs = 10000, transfer) => new Promise((resolve, reject) => {
   const worker = getImageWorker();
   if (!worker) { reject(new Error('no worker')); return; }
   const id = ++workerSeq;
   const timer = setTimeout(() => {
     workerPending.delete(id);
     reject(new Error('worker timeout'));
-  }, 10000);
+  }, timeoutMs);
   workerPending.set(id, { resolve, reject, timer });
   try {
-    worker.postMessage({ id, ...payload });
+    if (transfer) worker.postMessage({ id, ...payload }, transfer);
+    else worker.postMessage({ id, ...payload });
   } catch (err) {
     workerPending.delete(id);
     clearTimeout(timer);
@@ -687,6 +778,8 @@ export const createThumbnail = (source) => createDerivative(source, { maxDim: TH
 export const createMedium = (source) => createDerivative(source, { maxDim: MEDIUM_MAX_DIM, quality: 0.85 });
 
 export const initStorage = async (onProgress) => {
+  setupWeekSaveFlush(); // perf 3: a pending debounced save must survive a reload
+  await replayPendingWeekSaves(); // perf 3: apply any unload stash first
   // 0. Dataset registry (global keys, never namespaced). First run with
   //    datasets: index the existing database to Nifty 50 / 2026 by moving
   //    every legacy flat key (sb_img_*, sb_extra_weeks, …) under that
@@ -730,6 +823,7 @@ export const initStorage = async (onProgress) => {
   for (const url of memCache.values()) revokeBlobUrl(url);
   revokeAllThumbUrls();
   memCache.clear();
+  mediumLru.clear(); // perf 2: the medium-URL bookkeeping restarts too
   thumbKnown.clear(); // repopulated by the thumbnail load below (round-2 improvement 4)
   cancelAllThumbEvictions();
   memCache.set('sb_datasets', datasets);
@@ -884,6 +978,20 @@ export const getStoredThumb = (weekId, dayName) => {
     return url;
   }
   if (t) return t;
+  // Restore the guard (it was removed for the negative control).
+  // Perf 5: if a thumb is known to exist in IndexedDB but its Blob was
+  // evicted from memCache (round-2 improvement 4 — the row scrolled
+  // off-screen and the 30 s grace expired), do NOT fall back to the
+  // full-res image. The grid would decode a huge chart (the scroll
+  // jank this whole thumbnail tier exists to avoid) and flash it
+  // briefly until the thumb reloads. Return null so the cell holds
+  // its placeholder; the DayCell effect already calls loadThumb in
+  // exactly this case, and notifyThumbs re-renders the cell when the
+  // thumb is back (an IndexedDB read, ~10–50 ms). The full-res
+  // fallback stays for cells whose thumb was never created (legacy
+  // images, backfill pending) — there thumbKnown has no key, so the
+  // fallback still applies and nothing is visually missing at startup.
+  if (thumbKnown.has(thumbKey(weekId, dayName))) return null;
   const img = memCache.get(imgKey(weekId, dayName));
   if (img === 'DELETED') return null;
   return img ?? null;
@@ -913,6 +1021,64 @@ export const getStoredImgAsync = async (weekId, dayName) => {
   return url;
 };
 
+/* ─── Medium-URL LRU cap + detail unmount eviction (perf 2) ───
+ * Medium (1600px) and full-res object URLs used to accumulate in
+ * memCache with no eviction at all: ~15–30 MB over 30 detail visits.
+ * Two bounds now:
+ * 1. Detail unmount: TradeDetail calls evictDetailImageUrls when its
+ *    image effect cleans up (unmount, or the day changes), which
+ *    revokes that day's full + medium URLs and drops them from
+ *    memCache. The IndexedDB Blobs stay, so the next visit re-creates
+ *    the URLs on demand; the grid keeps showing the thumb, which this
+ *    does not touch.
+ * 2. LRU cap: at most 20 medium URLs are cached. Every site that
+ *    creates a medium URL goes through cacheMediumUrl, which evicts
+ *    the least-recently-used ones past the cap. This bounds the
+ *    mediums preloaded for neighbouring days (preloadNeighbourImages)
+ *    and any URL a late async continuation re-creates after its day
+ *    was evicted. The cap is deliberately far above the live set (the
+ *    current day + 2 preloaded neighbours), so it cannot evict the
+ *    medium the user is looking at. */
+const MEDIUM_URL_CACHE_MAX = 20;
+const mediumLru = new Map(); // medKey -> true; insertion order = least → most recent
+const touchMediumKey = (key) => {
+  mediumLru.delete(key);
+  mediumLru.set(key, true);
+};
+const evictOldMediumUrls = () => {
+  while (mediumLru.size > MEDIUM_URL_CACHE_MAX) {
+    const oldest = mediumLru.keys().next().value;
+    mediumLru.delete(oldest);
+    const val = memCache.get(oldest);
+    // Only touch memCache when it still holds the blob: URL we tracked;
+    // anything else ('DELETED', a Blob, already gone) means another
+    // path owns the entry now, so just drop the bookkeeping.
+    if (typeof val === 'string' && val.startsWith('blob:')) {
+      revokeBlobUrl(val);
+      memCache.delete(oldest);
+    }
+  }
+};
+/** Cache a medium object URL, evicting the least-recently-used past 20. */
+const cacheMediumUrl = (weekId, dayName, url) => {
+  const key = medKey(weekId, dayName);
+  memCache.set(key, url);
+  touchMediumKey(key);
+  evictOldMediumUrls();
+};
+/** Perf 2: drop a detail page's full + medium object URLs. The
+ *  IndexedDB Blobs stay, so the next visit re-creates them on demand. */
+export const evictDetailImageUrls = (weekId, dayName) => {
+  for (const key of [imgKey(weekId, dayName), medKey(weekId, dayName)]) {
+    const val = memCache.get(key);
+    if (val !== 'DELETED') {
+      revokeBlobUrl(val);
+      memCache.delete(key);
+    }
+  }
+  mediumLru.delete(medKey(weekId, dayName));
+};
+
 /** Synchronous medium retrieval (detail page inline image) */
 export const getStoredMedium = (weekId, dayName) => {
   const m = memCache.get(medKey(weekId, dayName));
@@ -922,12 +1088,16 @@ export const getStoredMedium = (weekId, dayName) => {
 
 export const getStoredMediumAsync = async (weekId, dayName) => {
   const cached = memCache.get(medKey(weekId, dayName));
-  if (cached) return cached === 'DELETED' ? null : cached;
+  if (cached) {
+    if (cached === 'DELETED') return null;
+    touchMediumKey(medKey(weekId, dayName)); // a hit is a use (perf 2)
+    return cached;
+  }
   const val = await get(medKey(weekId, dayName));
   if (!val) return null;
   const blob = typeof val === 'string' && val.startsWith('data:image') ? dataURLtoBlob(val) : val;
   const url = blob instanceof Blob ? URL.createObjectURL(blob) : blob;
-  memCache.set(medKey(weekId, dayName), url);
+  cacheMediumUrl(weekId, dayName, url);
   return url;
 };
 
@@ -944,7 +1114,7 @@ export const ensureMedium = async (weekId, dayName) => {
     const mBlob = await createMedium(blob);
     if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
       const url = URL.createObjectURL(mBlob);
-      memCache.set(medKey(weekId, dayName), url);
+      cacheMediumUrl(weekId, dayName, url);
       set(medKey(weekId, dayName), mBlob).catch(() => {});
       return url;
     }
@@ -993,6 +1163,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
     memCache.set(kImg, 'DELETED');
     memCache.set(kThumb, 'DELETED');
     memCache.set(kMed, 'DELETED');
+    mediumLru.delete(kMed); // perf 2: the deleted medium is no longer cached
     memCache.delete(kMeta);
     thumbKnown.delete(kThumb); // round-2 improvement 4
     cancelThumbEviction(weekId, dayName);
@@ -1070,7 +1241,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
     // lands, and generates it on demand if it is still missing.
     if (all.medium !== blob) {
       const url = URL.createObjectURL(all.medium);
-      memCache.set(kMed, url);
+      cacheMediumUrl(weekId, dayName, url);
       set(kMed, all.medium).catch(() => {});
     }
   } else {
@@ -1116,7 +1287,7 @@ export const setStoredImg = async (weekId, dayName, val) => {
     createMedium(blob).then((mBlob) => {
       if (mBlob && mBlob instanceof Blob && mBlob !== blob) {
         const url = URL.createObjectURL(mBlob);
-        memCache.set(kMed, url);
+        cacheMediumUrl(weekId, dayName, url);
         set(kMed, mBlob).catch(() => {});
       }
     }).catch(() => {});
@@ -1132,6 +1303,7 @@ export const clearStoredImg = async (weekId, dayName) => {
   memCache.delete(imgKey(weekId, dayName));
   memCache.delete(thumbKey(weekId, dayName));
   memCache.delete(medKey(weekId, dayName));
+  mediumLru.delete(medKey(weekId, dayName)); // perf 2
   memCache.delete(metaKey(weekId, dayName));
   thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
   cancelThumbEviction(weekId, dayName);
@@ -1274,6 +1446,7 @@ export const deleteWeekData = async (weekId) => {
     thumbKnown.delete(thumbKey(weekId, dayName)); // round-2 improvement 4
     cancelThumbEviction(weekId, dayName);
     memCache.delete(medKey(weekId, dayName));
+    mediumLru.delete(medKey(weekId, dayName)); // perf 2
     dels.push(del(medKey(weekId, dayName)));
     memCache.delete(metaKey(weekId, dayName));
     dels.push(del(metaKey(weekId, dayName)));
@@ -1499,126 +1672,66 @@ export const exportCSVDatabase = async () => {
   return encodeURI(csvContent);
 };
 
-export const importDatabase = async (jsonString, onProgress) => {
-  // JSON.parse is synchronous. The caller should show a loading message
-  // before invoking this so the UI doesn't appear frozen.
-  let data;
-  try {
-    data = JSON.parse(jsonString);
-  } catch {
-    throw new Error('Invalid backup: could not parse JSON. File may be corrupted.');
+export const importDatabase = async (input, onProgress) => {
+  // Parse + validate + normalise + decode off the main thread when a
+  // worker is available, so importing a large backup doesn't freeze the
+  // UI on JSON.parse or on the base64 decode. The worker and the
+  // fallback run the same shared parseBackup (src/data/backupParse.js),
+  // so the bug-1 guarantees hold on both paths: a corrupt backup throws
+  // BEFORE anything is wiped, with the same errors. A validation failure
+  // from the worker (parseError) is surfaced directly — the backup is
+  // invalid, so there is nothing to fall back to. Only a transport
+  // failure (no worker, timeout, worker error) falls back to the
+  // main-thread parse.
+  //
+  // Input shape decides the path, and the shape matters: a string has
+  // to be parsed where it already is, because sending it to the worker
+  // would structured-clone it on the main thread — measured ~300 ms
+  // for a 160 MB backup, the very freeze this step removes. A Blob
+  // instead hands its bytes over as an ArrayBuffer TRANSFERRED to the
+  // worker (zero-copy, ~30 ms for 160 MB), where the worker decodes
+  // the text and runs the shared parseBackup. So the UI path passes
+  // the File itself; string callers (tests, small backups) take the
+  // main-thread parse. The Blob fallback re-reads the file as text —
+  // the transfer only detaches the ArrayBuffer copy, the Blob itself
+  // is unaffected — so a worker failure still imports correctly.
+  const parseOpts = {
+    currentDataset: getCurrentDataset(),
+    datasets: getDatasets(),
+    defaultDatasetId: DEFAULT_DATASET.id,
+  };
+  let parsed;
+  if (typeof input === 'string') {
+    parsed = await parseBackup(input, parseOpts);
+  } else if (input instanceof Blob) {
+    // tryWorkerParse never throws: a transport failure resolves to null
+    // (fall back), a validation failure resolves to { parseError } (throw
+    // it, no fallback), a success resolves to { parsed }.
+    const buffer = await input.arrayBuffer();
+    const tryWorkerParse = async () => {
+      try {
+        const res = await callWorker({ parseBackup: true, buffer, ...parseOpts }, 60000, [buffer]);
+        if (res.parseError) return { parseError: res.parseError };
+        return { parsed: res };
+      } catch {
+        return null;
+      }
+    };
+    const workerOut = await tryWorkerParse();
+    if (workerOut && workerOut.parseError) throw new Error(workerOut.parseError);
+    parsed = workerOut ? workerOut.parsed : await parseBackup(await input.text(), parseOpts);
+  } else {
+    throw new Error('Invalid backup input: expected a backup file or JSON text');
   }
-  if (!Array.isArray(data)) throw new Error('Invalid backup: expected a JSON array');
-
-  // Validate pair shape before touching anything: a non-iterable element
-  // (e.g. a bare number or null) would otherwise throw a raw TypeError
-  // out of the filter/find/destructure calls below.
-  for (const entry of data) {
-    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') {
-      throw new Error('Invalid backup: expected a JSON array of [key, value] pairs.');
-    }
-  }
-
-  // Validate before clearing — protect against importing a wrong/empty file
-  const sbKeys = data.filter(([k]) => typeof k === 'string' && String(k).startsWith('sb_'));
-  if (sbKeys.length === 0 && data.length > 0) {
-    throw new Error('Invalid backup: file contains no Snowball data (sb_ keys).');
-  }
+  const { otherEntries, imageBlobs, importTargetId, wipeAll, wipePrefix } = parsed;
+  // The write phase below iterates imageEntries and looks each Blob up
+  // in imageBlobs by key, as before (imageEntries used to carry the
+  // data-URL strings; it now carries the decoded Blobs' keys).
+  const imageEntries = [...imageBlobs.entries()];
 
   // Flush pending week-document saves before wiping: a save queued by an
   // edit would otherwise run after the wipe and resurrect its document.
   await flushAllWeekDocs();
-
-  // Three backup shapes, all restored losslessly (images are stored as
-  // data-URLs and converted back to Blobs byte-for-byte — never re-encoded):
-  //  1. Whole-database backup (current format): carries sb_datasets +
-  //     sb_current_dataset plus every dataset's keys. Restores everything.
-  //  2. Single-dataset backup (v4 marker ['sb_dataset', {id,index,year}]):
-  //     restores into that dataset only, other datasets are untouched.
-  //  3. Legacy flat backup (pre-datasets): keys without a dataset prefix
-  //     are migrated into Nifty 50 / 2026, replacing the whole database
-  //     exactly as the old whole-database backups did.
-  const marker = data.find(([k]) => k === 'sb_dataset');
-  const hasRegistry = data.some(([k]) => k === 'sb_datasets');
-
-  let normalised = [];
-  let wipeAll = false;
-  let wipePrefix = null;
-  // The target dataset of a single-dataset / legacy backup: only becomes
-  // current once the backup has validated (see below) — a failed import
-  // must not leave the module pointing at another dataset.
-  let importTargetId = null;
-
-  if (hasRegistry) {
-    wipeAll = true;
-    for (const [k, v] of data) {
-      if (k === 'sb_dataset' || typeof k !== 'string' || !k.startsWith('sb_')) continue;
-      if (k === 'sb_datasets' || k === 'sb_current_dataset' || k.startsWith('sb_ds_')) {
-        normalised.push([k, v]);
-      } else {
-        normalised.push([`${dsPrefix(DEFAULT_DATASET.id)}${k.slice(3)}`, v]);
-      }
-    }
-  } else {
-    const target = marker?.[1]?.id
-      ? { id: marker[1].id, index: marker[1].index, year: marker[1].year }
-      : getCurrentDataset();
-    const targetPrefix = dsPrefix(target.id);
-    wipePrefix = targetPrefix;
-    for (const [k, v] of data) {
-      if (k === 'sb_dataset' || typeof k !== 'string' || !k.startsWith('sb_')) continue;
-      if (k.startsWith('sb_ds_')) {
-        const entryDs = k.slice(6).split('__')[0];
-        if (entryDs !== target.id) {
-          throw new Error('Invalid backup: it mixes data from multiple index/year datasets.');
-        }
-        normalised.push([k, v]);
-      } else {
-        normalised.push([`${targetPrefix}${k.slice(3)}`, v]); // legacy flat key
-      }
-    }
-    // Register the target dataset if it is new, and select it — after import
-    // the app reloads into the restored dataset.
-    const datasets = getDatasets();
-    if (!datasets.some((d) => d.id === target.id)) {
-      normalised.push(['sb_datasets', [...datasets, target]]);
-    }
-    normalised.push(['sb_current_dataset', target.id]);
-    importTargetId = target.id;
-  }
-
-  // Split the backup into image entries (data-URL strings) and everything
-  // else, BEFORE wiping — the split is needed for the validation below.
-  // Thumbnails are skipped: initStorage regenerates them from the full
-  // images after import.
-  const imageEntries = normalised.filter(([k, v]) =>
-    typeof v === 'string' && v.startsWith('data:image') && !String(k).includes('__thumb_')
-  );
-  const otherEntries = normalised.filter(([, v]) =>
-    !(typeof v === 'string' && v.startsWith('data:image'))
-  );
-
-  // Decode every image BEFORE wiping: a corrupt/truncated base64 image
-  // (atob throws InvalidCharacterError) must fail here, while the old
-  // database is still intact — never after the wipe, which used to leave
-  // a half-restored database. The Blobs are held in memory and written
-  // after the wipe, so each image is decoded exactly once.
-  const imageBlobs = new Map();
-  for (let i = 0; i < imageEntries.length; i++) {
-    const [k, v] = imageEntries[i];
-    let blob;
-    try {
-      blob = dataURLtoBlob(v);
-    } catch {
-      throw new Error(`Invalid backup: the image stored under "${k}" is corrupted (bad base64 data). Nothing was changed.`);
-    }
-    if (blob.size === 0) {
-      throw new Error(`Invalid backup: the image stored under "${k}" is empty. Nothing was changed.`);
-    }
-    imageBlobs.set(k, blob);
-    // Yield periodically so a huge backup doesn't freeze the UI while decoding.
-    if ((i + 1) % 20 === 0) await new Promise((r) => setTimeout(r, 0));
-  }
 
   // The backup has validated: the target dataset becomes current now.
   if (importTargetId) currentDatasetId = importTargetId;
