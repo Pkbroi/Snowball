@@ -550,11 +550,17 @@ export const getImageDimensions = async (blob) => {
   }
   if (typeof document === 'undefined' || typeof Image === 'undefined') return null;
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), 1000);
+    let objectUrl = null;
+    // Bug 13: the object URL used to leak (one per call). Revoke it on
+    // every exit — load, error, and the timeout (revoking twice is a
+    // no-op, so a late onload/onerror after the timeout is harmless).
+    const revoke = () => { if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; } };
+    const timer = setTimeout(() => { revoke(); resolve(null); }, 1000);
     const img = new Image();
-    img.onload = () => { clearTimeout(timer); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
-    img.onerror = () => { clearTimeout(timer); resolve(null); };
-    img.src = URL.createObjectURL(blob);
+    img.onload = () => { clearTimeout(timer); revoke(); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
+    img.onerror = () => { clearTimeout(timer); revoke(); resolve(null); };
+    objectUrl = URL.createObjectURL(blob);
+    img.src = objectUrl;
   });
 };
 
@@ -572,8 +578,12 @@ export const formatBytes = (bytes) => {
  * Derivative generator (thumbnail / medium). Tries the Web Worker first so
  * decoding + downscaling never blocks the main thread / scrolling; falls
  * back to the main-thread canvas path when Workers are unavailable or fail.
- * `source` may be a Blob or a data-URL string. Returns a Blob, or `source`
- * unchanged when generation is impossible (jsdom tests, tiny images).
+ * `source` may be a Blob or a data-URL string. Returns the derived Blob,
+ * or null when generation fails — a failure must never hand the original
+ * back as if it were a derivative (bug 6: the thumb callers stored the
+ * full-res image as the thumb because they could not tell the two
+ * apart). The jsdom early return below still hands `source` back, so
+ * the upload/eviction tests can exercise the thumb path.
  */
 export const createDerivative = async (source, { maxDim = THUMB_MAX_DIM, quality = 0.8 } = {}) => {
   if (!source || typeof document === 'undefined') return source;
@@ -591,14 +601,21 @@ export const createDerivative = async (source, { maxDim = THUMB_MAX_DIM, quality
   }
   return new Promise((resolve) => {
     let settled = false;
+    // Bug 13: the <img> source URL for a Blob used to leak (one per
+    // derivation on this path). Revoke it when the derivation settles
+    // — by then the pixels are already in the canvas/blob, so the
+    // image no longer needs its URL; a late onload/onerror after the
+    // 10s timer is a no-op (finish is settled-guarded).
+    let objectUrl = null;
     const finish = (res) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
         resolve(res);
       }
     };
-    const timer = setTimeout(() => finish(source), 10000);
+    const timer = setTimeout(() => finish(null), 10000);
 
     try {
       const img = new Image();
@@ -620,44 +637,45 @@ export const createDerivative = async (source, { maxDim = THUMB_MAX_DIM, quality
             try {
               const offscreen = new OffscreenCanvas(width, height);
               const ctx = offscreen.getContext('2d');
-              if (!ctx) { finish(source); return; }
+              if (!ctx) { finish(null); return; }
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, width, height);
               offscreen.convertToBlob({ type: 'image/webp', quality })
-                .then(blob => { if (blob) finish(blob); else finish(source); })
-                .catch(() => finish(source));
+                .then(blob => { if (blob) finish(blob); else finish(null); })
+                .catch(() => finish(null));
             } catch {
-              finish(source);
+              finish(null);
             }
           } else {
             const canvas = document.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext('2d');
-            if (!ctx) { finish(source); return; }
+            if (!ctx) { finish(null); return; }
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
             canvas.toBlob((blob) => {
               if (blob) finish(blob);
-              else finish(source);
+              else finish(null);
             }, 'image/webp', quality);
           }
         } catch {
-          finish(source);
+          finish(null);
         }
       };
-      img.onerror = () => finish(source);
+      img.onerror = () => finish(null);
       if (source instanceof Blob) {
-        img.src = URL.createObjectURL(source);
+        objectUrl = URL.createObjectURL(source);
+        img.src = objectUrl;
       } else if (typeof source === 'string') {
         img.src = source;
       } else {
-        finish(source);
+        finish(null);
       }
     } catch {
-      finish(source);
+      finish(null);
     }
   });
 };
