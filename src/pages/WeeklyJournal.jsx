@@ -834,13 +834,17 @@ function GoToModal({ onClose, onApply }) {
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-outline-variant text-on-surface font-label-md hover:bg-surface-variant transition-colors">
             Cancel
           </button>
-          <button 
+          <button
+            // Bug 10: the button used to close the modal even when the
+            // form was incomplete, silently applying nothing. It stays
+            // disabled until the active tab's form is complete.
+            disabled={tab === 'date' ? !dateVal : !(rangeFrom && rangeTo)}
             onClick={() => {
               if (tab === 'date' && dateVal) onApply({ type: 'date', date: dateVal });
               else if (tab === 'range' && rangeFrom && rangeTo) onApply({ type: 'range', from: rangeFrom, to: rangeTo });
               onClose();
             }}
-            className="px-4 py-2 rounded-lg bg-surface-variant text-on-surface font-label-md hover:bg-surface-bright transition-colors shadow-sm"
+            className="px-4 py-2 rounded-lg bg-surface-variant text-on-surface font-label-md hover:bg-surface-bright transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Go to
           </button>
@@ -957,8 +961,9 @@ export default function WeeklyJournal() {
   // re-render per keystroke. The results are identical, just ~100ms
   // later. The × button clears immediately (no debounce on a clear),
   // and the draft follows the URL when it changes elsewhere (back /
-  // forward navigation, dataset switch) — unless a commit is pending,
-  // in which case the pending commit wins within 100ms anyway.
+  // forward navigation, dataset switch) — a switch cancels any pending
+  // commit via clearSearch, so it can no longer land after the switch
+  // and re-apply the old search to the new dataset (bug 9).
   const [searchDraft, setSearchDraft] = useState(search);
   const searchTimerRef = useRef(null);
   const handleSearchChange = useCallback((val) => {
@@ -1101,14 +1106,21 @@ export default function WeeklyJournal() {
       setDatasets(getDatasets());
       setCurrentDataset(getCurrentDataset());
       setAllTrades([...trades, ...getExtraWeeks()]);
-      setSearch('');
+      // Bug 9: clear the search through clearSearch, not setSearch('') —
+      // a search typed just before the switch leaves a debounce timer
+      // pending, and that timer would re-apply the old search to the
+      // new dataset within 100ms. And reset the date filter, which
+      // belongs to the dataset just left, not the one just opened.
+      clearSearch();
+      setDateFilter(null);
+      sessionStorage.removeItem('sb_date_filter');
       sessionStorage.removeItem('sb_last_week_id');
       sessionStorage.removeItem('sb_last_day');
       scrollContainerRef.current?.scrollTo({ top: 0, left: 0 });
     } finally {
       setSwitchingDataset(false);
     }
-  }, [switchingDataset, setSearch]);
+  }, [switchingDataset, clearSearch]);
 
   // Multi-frame restoration to ensure Virtuoso and layout dimensions have settled
   useEffect(() => {
@@ -1306,6 +1318,12 @@ export default function WeeklyJournal() {
     const handleKeyDown = (e) => {
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
+      // Bug 12: ignore shortcuts while the user is typing — Ctrl+N in
+      // the search box used to add a week, and Ctrl+= / Ctrl+- zoomed
+      // the grid mid-keystroke. The Quill editor is contentEditable,
+      // so it is covered too.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
       // Ctrl+N — add new row
       if (e.key.toLowerCase() === 'n') {
