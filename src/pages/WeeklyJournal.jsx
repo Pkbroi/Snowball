@@ -321,7 +321,24 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
 /* ═══════════════════════════════════════════
    WeekRow
 ═══════════════════════════════════════════ */
-const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, search, gridCols, searchHits, remarksVersion, thumbsVersion }) {
+
+// A fresh empty week — the same shape the + button creates. Shared by
+// addRow (append) and insertRow (above/below), so a new row is identical
+// whichever way it is added.
+function createEmptyWeek() {
+  return {
+    id: `week-custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, // random suffix: two rapid clicks must never share an id
+    weekStart: '',
+    weekEnd:   '',
+    remarks:   '',
+    days: ['Monday','Tuesday','Wednesday','Thursday','Friday'].map((d) => ({
+      day: d, img: null, outcome: null, notes: '', instrument: null, timeframe: null, session: null, rr: null,
+    })),
+    isCustom: true,
+  };
+}
+
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWeekContextMenu, search, gridCols, searchHits, remarksVersion, thumbsVersion }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -368,7 +385,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, sear
     >
 
       {/* ── Week label — editable ── */}
-      <div data-testid={`week-label-${trade.id}`} className={`p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del ${labelMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}>
+      <div data-testid={`week-label-${trade.id}`} onContextMenu={(e) => onWeekContextMenu(e, trade.id)} className={`p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del ${labelMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}>
         {trade.isCustom && (
           <button 
             onClick={() => onDeleteWeek(trade.id)}
@@ -1012,6 +1029,10 @@ export default function WeeklyJournal() {
   })), []);
   const [showSettings, setShowSettings] = useState(false);
   const [showGoTo, setShowGoTo] = useState(false);
+  // Right-click menu on a Week cell: { weekId, x, y } | null. Position is
+  // the cursor, clamped into the viewport when the menu opens.
+  const [weekCtxMenu, setWeekCtxMenu] = useState(null);
+  const weekCtxMenuRef = useRef(null);
   const [datasets, setDatasets] = useState(() => getDatasets());
   const [currentDataset, setCurrentDataset] = useState(() => getCurrentDataset());
   const [showAddDataset, setShowAddDataset] = useState(false);
@@ -1274,17 +1295,7 @@ export default function WeeklyJournal() {
 
   /* ── Add new row ── */
   const addRow = useCallback(async () => {
-    const weekId  = `week-custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; // random suffix: two rapid clicks must never share an id
-    const newWeek = {
-      id: weekId,
-      weekStart: '',
-      weekEnd:   '',
-      remarks:   '',
-      days: ['Monday','Tuesday','Wednesday','Thursday','Friday'].map((d) => ({
-        day: d, img: null, outcome: null, notes: '', instrument: null, timeframe: null, session: null, rr: null,
-      })),
-      isCustom: true,
-    };
+    const newWeek = createEmptyWeek();
 
     const extras = [...getExtraWeeks(), newWeek];
     // Start the IndexedDB write, update the UI instantly, then await the
@@ -1300,6 +1311,27 @@ export default function WeeklyJournal() {
     }, 80);
   }, []);
 
+  /* ── Insert a row above / below a given row ── */
+  const insertRow = useCallback(async (weekId, position) => {
+    const extras = getExtraWeeks();
+    const index = extras.findIndex((w) => w.id === weekId);
+    if (index === -1) return;
+    const newWeek = createEmptyWeek();
+    const next = [...extras];
+    next.splice(position === 'above' ? index : index + 1, 0, newWeek);
+    // Same discipline as addRow: update the UI instantly from memory,
+    // then await the IndexedDB write.
+    const saved = setExtraWeeks(next);
+    setAllTrades([...trades, ...next]);
+    await saved;
+
+    // The new row sits next to the clicked row, which is already
+    // visible, so only scroll when it landed off-screen.
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-testid="week-row-${newWeek.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }, []);
+
   /* ── Delete row ── */
   const deleteRow = useCallback(async (weekId) => {
     if (window.confirm('Are you sure you want to delete this custom week? All associated notes and remarks will be permanently deleted.')) {
@@ -1313,6 +1345,48 @@ export default function WeeklyJournal() {
       await Promise.all([saved, removed]);
     }
   }, []);
+
+  /* ── Week-cell context menu (right-click → insert row above/below) ── */
+  const handleWeekContextMenu = useCallback((e, weekId) => {
+    // Right-clicks on the Month/Dates inputs keep the browser's native
+    // text menu (cut/copy/paste); everywhere else in the cell opens the
+    // insert menu.
+    if (e.target && e.target.tagName === 'INPUT') return;
+    e.preventDefault();
+    // Clamp the menu into the viewport so it never runs off the right
+    // or bottom edge. The menu sizes to its labels (~120px wide,
+    // ~75px tall for the two options), so the margins stay small.
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - 130));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - 85));
+    setWeekCtxMenu({ weekId, x, y });
+  }, []);
+
+  // Close the week context menu on an outside press, Escape, any scroll,
+  // or a right-click that is not on another Week cell (that one re-opens
+  // the menu at the new cell instead).
+  useEffect(() => {
+    if (!weekCtxMenu) return;
+    const onPointerDown = (e) => {
+      if (weekCtxMenuRef.current?.contains(e.target)) return;
+      setWeekCtxMenu(null);
+    };
+    const onKeyDown = (e) => { if (e.key === 'Escape') setWeekCtxMenu(null); };
+    const onScroll = () => setWeekCtxMenu(null);
+    const onContextMenu = (e) => {
+      if (e.target?.closest?.('[data-testid^="week-label-"]')) return;
+      setWeekCtxMenu(null);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('contextmenu', onContextMenu);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [weekCtxMenu]);
 
   /* ── Keyboard shortcuts ── */
   useEffect(() => {
@@ -1447,6 +1521,34 @@ export default function WeeklyJournal() {
       
       {/* ── GoTo modal ── */}
       {showGoTo && <GoToModal onClose={() => setShowGoTo(false)} onApply={setDateFilter} />}
+
+      {/* ── Week context menu — right-click a Week cell ── */}
+      {weekCtxMenu && (
+        <div
+          ref={weekCtxMenuRef}
+          data-testid="week-ctx-menu"
+          className="fixed z-50 rounded-lg border border-[#424242] bg-black px-1.5 py-1 shadow-2xl"
+          style={{ left: weekCtxMenu.x, top: weekCtxMenu.y }}
+        >
+          <button
+            data-testid="ctx-add-above"
+            onClick={() => { insertRow(weekCtxMenu.weekId, 'above'); setWeekCtxMenu(null); }}
+            className="flex w-full items-center rounded-full border border-[#424242] px-4 py-1.5 text-left font-label-md font-bold text-white hover:bg-[#2f2f2f] transition-colors"
+            style={{ fontSize: '14px' }}
+          >
+            Add above
+          </button>
+          <div className="mx-2 h-px bg-[#424242]" />
+          <button
+            data-testid="ctx-add-below"
+            onClick={() => { insertRow(weekCtxMenu.weekId, 'below'); setWeekCtxMenu(null); }}
+            className="flex w-full items-center rounded-full border border-[#424242] px-4 py-1.5 text-left font-label-md font-bold text-white hover:bg-[#2f2f2f] transition-colors"
+            style={{ fontSize: '14px' }}
+          >
+            Add below
+          </button>
+        </div>
+      )}
 
       <div className="flex h-screen w-full">
         <main className="flex-1 flex flex-col h-full bg-black relative overflow-hidden">
@@ -1677,6 +1779,7 @@ export default function WeeklyJournal() {
                               trade={trade} 
                               onOpenRemarks={setRemarksModal} 
                               onDeleteWeek={deleteRow} 
+                              onWeekContextMenu={handleWeekContextMenu}
                               search={search}
                               gridCols={gridTemplateColumns}
                               searchHits={searchHits}
