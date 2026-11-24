@@ -3,6 +3,7 @@ import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById } from '../data/trades.js';
 import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls } from '../data/storage.js';
+import { exportChartPng } from '../data/exportChart.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
 // (perf step 8) — see the mount logic in TradeDetail below. TradeDetail
@@ -400,6 +401,52 @@ export default function TradeDetail() {
     // resize end / delete), never per pointermove, so awaiting is cheap.
     await setAnnotations(weekId, dayName, next);
   }, [weekId, dayName]);
+
+  // Download the chart at full original quality, with the annotation
+  // marks baked in. The export composites on a native-size canvas from
+  // the stored original (see src/data/exportChart.js) — it never
+  // screenshots the lightbox, so no pixels are lost to the screen size
+  // and no toolbar, crosshair or selection highlight ends up in the file.
+  // The save location is asked EVERY time: the native Save As dialog
+  // (showSaveFilePicker) opens with the PNG name already filled in, so
+  // the user picks the folder and filename. If the dialog API is not
+  // available, it falls back to a plain download into the Downloads
+  // folder, the way the backup export already does. Cancelling the
+  // dialog (AbortError) just leaves the lightbox as it was.
+  const downloadChart = useCallback(async () => {
+    if (!hasChart || !picRect) return;
+    try {
+      const url = await getStoredImgAsync(weekId, dayName);
+      if (!url) return;
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const blob = await exportChartPng(img, annotations, picRect.width);
+      const label = [trade?.weekStart, trade?.weekEnd, dayName].filter(Boolean).join(' ') || weekId;
+      const suggestedName = `Snowball ${label}.png`.replace(/[\\/:*?"<>|]+/g, '-');
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{ description: 'PNG image', accept: { 'image/png': ['.png'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = suggestedName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      }
+    } catch {
+      // A failed export (e.g. the original could not be decoded) or a
+      // cancelled save dialog leaves the lightbox exactly as it was.
+    }
+  }, [hasChart, picRect, weekId, dayName, annotations, trade]);
 
   // Displayed picture rect (viewport px): the lightbox image is
   // object-contain in a full-viewport box, scaled by fit*zoom about the
@@ -1063,6 +1110,19 @@ export default function TradeDetail() {
           {/* Crosshair Lines */}
           <div ref={hLineRef} className="pointer-events-none fixed left-0 right-0 border-t border-dashed border-white/70 z-40 mix-blend-difference" style={{ top: '-10px' }} />
           <div ref={vLineRef} className="pointer-events-none fixed top-0 bottom-0 border-l border-dashed border-white/70 z-40 mix-blend-difference" style={{ left: '-10px' }} />
+
+          {hasChart && (
+            <button
+              onClick={(e) => { e.stopPropagation(); downloadChart(); }}
+              onPointerDown={(e) => e.stopPropagation()}
+              data-testid="chart-download-btn"
+              title="Download chart with markers (full quality PNG)"
+              aria-label="Download chart with markers"
+              className="absolute top-4 right-16 flex items-center justify-center w-10 h-10 rounded-full bg-surface-container border border-outline-variant text-on-surface hover:bg-surface-bright transition-colors z-[60] cursor-default"
+            >
+              <span className="material-symbols-outlined">download</span>
+            </button>
+          )}
 
           <button
             onClick={() => setExpanded(false)}
