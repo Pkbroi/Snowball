@@ -1457,13 +1457,14 @@ export default function TradeDetail() {
 
       {/* ── Document container ── */}
       <main
-        className="w-full max-w-4xl layer-surface rounded-xl p-xl flex flex-col animate-expand flex-grow gap-md"
+        className="w-full max-w-4xl layer-surface rounded-xl px-xl pt-4 pb-xl flex flex-col animate-expand flex-grow gap-md"
         style={{ animationDelay: '50ms' }}
       >
-        {/* Header */}
-        <div className="flex flex-col gap-3">
+        {/* Header — compact: tight rows, slim top padding, and -mb-2
+            pulls the chart up under the divider. */}
+        <div className="flex flex-col gap-1.5 -mb-2" data-testid="detail-header">
           <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               <div 
                 className="flex items-center gap-2 text-on-surface-variant relative cursor-pointer" 
                 onClick={() => {
@@ -1474,7 +1475,7 @@ export default function TradeDetail() {
                   setTimeout(() => dateInputRef.current?.showPicker?.(), 0);
                 }}
               >
-                <span className="font-label-md text-label-md bg-surface-container-high px-3 py-1.5 rounded-md border border-outline-variant hover:border-primary transition-colors flex items-center gap-2">
+                <span className="font-label-md text-label-md bg-[#000000] text-white font-bold px-2.5 py-1 rounded-md border border-[#424242] hover:bg-[#1a1a1a] transition-colors flex items-center gap-2">
                   {displayDate}
                   <span className="material-symbols-outlined text-[18px]">calendar_month</span>
                 </span>
@@ -1487,8 +1488,8 @@ export default function TradeDetail() {
                 />
               </div>
               <span className="text-outline-variant">·</span>
-              <span className="font-label-md text-label-md text-on-surface">{day.day}</span>
-              <div className="ml-4 w-16 text-left">
+              <span className="font-label-md text-label-md text-white font-bold">{day.day}</span>
+              <div className="ml-2 w-16 text-left">
                 <span className={`text-[11px] font-label-md transition-opacity duration-300 ${saveStatus === 'Saving...' ? 'text-on-surface-variant' : 'text-primary'}`}>
                   {saveStatus}
                 </span>
@@ -1499,9 +1500,9 @@ export default function TradeDetail() {
           {/* Tags */}
           <div className="flex items-center gap-2 flex-wrap text-sm">
             {tags.map(tag => (
-              <span key={tag} className="flex items-center gap-1 bg-surface-variant text-on-surface px-2 py-1 rounded-md text-[12px]">
+              <span key={tag} className="flex items-center gap-1 bg-[#000000] text-white font-bold border border-[#424242] px-2 py-0.5 rounded-md text-[12px]">
                 {tag}
-                <button onClick={() => removeTag(tag)} className="text-on-surface-variant hover:text-primary mt-0.5">
+                <button onClick={() => removeTag(tag)} className="text-white/60 hover:text-white mt-0.5">
                   <span className="material-symbols-outlined text-[12px]">close</span>
                 </button>
               </span>
@@ -1512,7 +1513,7 @@ export default function TradeDetail() {
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={addTag}
-              className="bg-transparent border-none text-[12px] text-on-surface-variant focus:outline-none focus:ring-0 placeholder-on-surface-variant w-24"
+              className="bg-transparent border-none p-0 text-[12px] text-white font-bold focus:outline-none focus:ring-0 placeholder-on-surface-variant w-24"
             />
           </div>
 
