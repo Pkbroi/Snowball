@@ -1,8 +1,8 @@
 import { useRef, useState, useCallback, useEffect, useMemo, lazy, Suspense } from 'react';
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { getTradeById } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls } from '../data/storage.js';
+import { getTradeById, DAYS } from '../data/trades.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls, getExtraWeeks } from '../data/storage.js';
 import { exportChartPng } from '../data/exportChart.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
@@ -309,6 +309,34 @@ export default function TradeDetail() {
   // Resolve the main chart: localStorage > router state img > static day.img
   const weekId  = trade?.weekId  ?? id;
   const dayName = trade?.day?.day ?? '';
+
+  // Previous / next day — step through the journal in grid order (week
+  // rows top to bottom, Monday to Friday inside each week), empty days
+  // included: every cell is a day you can open. Monday's previous day
+  // is Friday of the week above; Friday's next day is Monday of the
+  // week below. The route stays `/trade/<weekId>` with the day in
+  // router state, exactly how opening a cell works today, so a reload
+  // still lands on the right day (sb_last_day) and Back still returns
+  // to the right cell. No remount is needed: the sync effect below
+  // ([trade, weekId, dayName]) re-loads chart, notes, tags, annotations
+  // and date on a day change, and the image effect re-loads the full
+  // image with eviction — the same machinery a deep link uses.
+  const dayList = getExtraWeeks().flatMap((w) => DAYS.map((d) => ({ weekId: w.id, day: d })));
+  const dayIndex = dayList.findIndex((p) => p.weekId === weekId && p.day === dayName);
+  const prevDay = dayIndex > 0 ? dayList[dayIndex - 1] : null;
+  const nextDay = dayIndex >= 0 && dayIndex < dayList.length - 1 ? dayList[dayIndex + 1] : null;
+  const goToDay = useCallback((target) => {
+    if (!target) return;
+    const t = getTradeById(target.weekId);
+    if (!t) return;
+    const day = t.days.find((d) => d.day === target.day);
+    if (!day) return;
+    sessionStorage.setItem('sb_last_week_id', t.id);
+    sessionStorage.setItem('sb_last_day', target.day);
+    navigate(`/trade/${t.id}`, {
+      state: { weekId: t.id, weekStart: t.weekStart, weekEnd: t.weekEnd, remarks: t.remarks, search, day },
+    });
+  }, [navigate, search]);
 
   // chartImg is the fast placeholder (thumbnail / router-state image).
   // fullImg is the original, uncompressed chart, loaded lazily below.
@@ -1395,6 +1423,36 @@ export default function TradeDetail() {
       >
         <span className="material-symbols-outlined text-[16px]">arrow_back</span>
         <span className="text-[11px] font-medium tracking-wide uppercase">Back</span>
+      </button>
+
+      {/* ── Previous / next day (Floating, in the page margins) ── */}
+      {/* One arrow in each margin gutter, vertically centred like the
+          Back button above — in the space between the chart's edge and
+          the page edge, never on top of the chart itself. They stay put
+          while the page scrolls, so the day can be changed from anywhere
+          on the notes page, and they sit under the lightbox (z-40 vs
+          z-[60]) so they can't be hit while the fullscreen chart is open. */}
+      <button
+        onClick={() => goToDay(prevDay)}
+        disabled={!prevDay}
+        data-testid="prev-day-btn"
+        aria-label="Previous day"
+        title="Previous day"
+        style={{ fontVariationSettings: "'FILL' 0, 'wght' 700" }}
+        className="fixed left-4 md:left-6 top-1/2 -translate-y-1/2 z-40 w-12 h-12 rounded-full bg-[#212121]/50 backdrop-blur-md border border-[#424242]/50 text-white flex items-center justify-center shadow-sm hover:bg-[#212121]/80 hover:shadow-md disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-[#212121]/50 transition-all"
+      >
+        <span className="material-symbols-outlined text-[26px]">chevron_left</span>
+      </button>
+      <button
+        onClick={() => goToDay(nextDay)}
+        disabled={!nextDay}
+        data-testid="next-day-btn"
+        aria-label="Next day"
+        title="Next day"
+        style={{ fontVariationSettings: "'FILL' 0, 'wght' 700" }}
+        className="fixed right-4 md:right-6 top-1/2 -translate-y-1/2 z-40 w-12 h-12 rounded-full bg-[#212121]/50 backdrop-blur-md border border-[#424242]/50 text-white flex items-center justify-center shadow-sm hover:bg-[#212121]/80 hover:shadow-md disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-[#212121]/50 transition-all"
+      >
+        <span className="material-symbols-outlined text-[26px]">chevron_right</span>
       </button>
 
       {/* ── Document container ── */}

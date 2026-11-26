@@ -11,7 +11,7 @@ import {
 
 export const trades = [];
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 /**
  * Rebuild a week from storage (bug 5). The detail page used to depend

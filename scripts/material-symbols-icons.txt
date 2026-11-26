@@ -3,6 +3,8 @@ add_photo_alternate
 arrow_back
 calendar_month
 calendar_today
+chevron_left
+chevron_right
 close
 delete
 delete_sweep
