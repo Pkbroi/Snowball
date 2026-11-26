@@ -1272,7 +1272,7 @@ export default function TradeDetail() {
                 if (a.type === 'comment') {
                   return (
                     <div key={a.id} data-testid="ann-mark" data-ann-type="comment"
-                      className={`absolute rounded ${selected ? 'ring-2 ring-white/70' : ''}`}
+                      className="absolute rounded-full"
                       style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined }}
                       onPointerDown={(e) => {
                         // Bug 8: swallow the event only in select mode,
@@ -1335,7 +1335,17 @@ export default function TradeDetail() {
                         onChange={(e) => { updateAnnText(a.id, e.target.value, e.target); }}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); e.stopPropagation(); }}
-                        className={`w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded bg-black/85 ${annMenuId === a.id ? 'border-2 border-dotted border-amber-400 focus:border-amber-400' : 'border border-white/40'} p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
+                        // One perimeter only, on the textarea's own border:
+                        // blue while typing or selected, white when unselected.
+                        // (The wrapper used to carry a second, white ring-2
+                        // that hung 6px below the box — the textarea sits on
+                        // the text baseline, so the wrapper is taller than
+                        // it — reading as a shadow box behind the blue one.
+                        // And the forms plugin's blue focus ring is killed
+                        // with focus:[box-shadow:none], so focus adds no
+                        // second outline either. The amber dotted border
+                        // stays for the right-click resize state.)
+                        className={`block w-full ${a.h ? 'h-full max-h-none min-h-0' : 'min-h-[48px] max-h-[200px]'} overflow-y-auto resize-none rounded-full bg-black/85 ${annMenuId === a.id ? 'border-2 border-dotted border-amber-400 focus:border-amber-400' : selected ? 'border border-[#2563eb]' : 'border border-white/40 focus:border-[#2563eb]'} focus:[box-shadow:none] p-2 text-[13px] font-bold text-white outline-none placeholder:text-white/40 placeholder:font-bold`}
                       />
                       {annDeleteBtn(a, 'right-3 top-0 -translate-y-1/2')}
                       {annMenuId === a.id && (
@@ -1589,7 +1599,7 @@ export default function TradeDetail() {
                       if (!a.text || !a.text.trim()) return null;
                       return (
                         <div key={a.id} data-testid="inline-ann-mark" data-ann-type="comment"
-                          className="absolute rounded bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white whitespace-pre-wrap break-words"
+                          className="absolute rounded-full bg-black/85 border border-white/40 p-2 text-[13px] font-bold text-white whitespace-pre-wrap break-words"
                           style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined, overflow: a.h ? 'hidden' : undefined }}
                         >
                           {a.text}

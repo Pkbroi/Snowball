@@ -98,7 +98,9 @@ function drawComment(ctx, ann, W, H, scale) {
   const y = (ann.y / 100) * H;
   const fontSize = 13 * scale;
   const padding = 8 * scale;
-  const radius = 4 * scale;
+  // Same corner radius as the comment box on screen (rounded-full in
+  // this theme is 12px), so the download matches the chart.
+  const radius = 12 * scale;
   const lineHeight = 13 * 1.5 * scale; // textarea inherits line-height 1.5
   const boxW = (ann.w ?? 180) * scale;
   ctx.save();
