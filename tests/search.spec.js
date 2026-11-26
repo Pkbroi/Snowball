@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test';
 
-// Search is case-insensitive and precise: a query matches only the cells
-// whose notes/tags/remarks/label actually contain it (any casing), and
-// every matching cell gets a clear amber outline — including the remarks
-// and week-label cells, which previously matched with no highlight at all.
+// Tag search language (2026-11-27): tag=(gapup+loss) for days with both
+// tags, tag=(gapup+loss) + loss for both tags AND 'loss' in the notes,
+// '+' = AND, ',' = OR. A bare word searches the notes only — it no longer
+// matches tags, remarks or week labels (dates are found with GoTo).
+// Every matching cell gets a clear amber outline.
 
 async function addWeeks(page, n) {
   for (let i = 0; i < n; i++) await page.getByTestId('add-week-btn').click();
@@ -56,7 +57,7 @@ test('tags: tag match outlines only that cell', async ({ page }) => {
     s.setTags(a, 'Monday', ['GapUp']);
     s.setTags(a, 'Tuesday', ['gapdown']);
   }, [A]);
-  const r = await search(page, 'gapup');
+  const r = await search(page, 'tag=gapup');
   expect(r.rows).toEqual([A]);
   expect(r.outlined).toEqual([`day-cell-${A}-Monday`]);
 });
@@ -68,20 +69,9 @@ test('remarks: remarks match outlines the remarks cell, not day cells', async ({
     const s = await import('/src/data/storage.js');
     s.setRemarks(a, '<p>GapUp in remarks</p>');
   }, [A]);
-  const r = await search(page, 'gapup');
+  const r = await search(page, 'rem=gapup');
   expect(r.rows).toEqual([A]);
   expect(r.outlined).toEqual([`remarks-cell-${A}`]);
-});
-
-test('week label: label match outlines the label cell', async ({ page }) => {
-  await page.goto('/');
-  const [A] = await addWeeks(page, 1);
-  await page.locator(`[data-testid="week-label-${A}"] input`).first().fill('GapUp');
-  await page.locator(`[data-testid="week-label-${A}"] input`).first().blur();
-  await page.waitForTimeout(300);
-  const r = await search(page, 'gapup');
-  expect(r.rows).toEqual([A]);
-  expect(r.outlined).toEqual([`week-label-${A}`]);
 });
 
 test('trailing space still matches; empty cells never match', async ({ page }) => {

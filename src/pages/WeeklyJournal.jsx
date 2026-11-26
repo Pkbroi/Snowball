@@ -3,6 +3,12 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Virtuoso } from 'react-virtuoso';
 import { trades } from '../data/trades.js';
 import {
+  parseSearchQuery,
+  dayMatchesQuery,
+  dayOutlineMatchesQuery,
+  remarksMatchQuery,
+} from '../data/searchQuery.js';
+import {
   setStoredImg, getStoredImgAsync,
   getStoredImg, getStoredThumb, revokeThumbUrl,
   getRemarks, setRemarks, getRemarksPreview,
@@ -344,8 +350,9 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWe
 
   // Search matches for the non-day cells: remarks column and week label.
   // Same amber outline as DayCell, so every shown row explains itself.
+  // (The week label is no longer searchable — dates are found with the
+  // GoTo date filter — so there is no labelMatch anymore.)
   const remarksMatch = searchHits ? searchHits.has(`rem:${trade.id}`) : false;
-  const labelMatch = searchHits ? searchHits.has(`lbl:${trade.id}`) : false;
 
   // The front-page cell shows the first 5 lines of the remarks in bold
   // white; recompute when this week's remarks modal closes (its
@@ -385,7 +392,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWe
     >
 
       {/* ── Week label — editable ── */}
-      <div data-testid={`week-label-${trade.id}`} onContextMenu={(e) => onWeekContextMenu(e, trade.id)} className={`p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del ${labelMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}>
+      <div data-testid={`week-label-${trade.id}`} onContextMenu={(e) => onWeekContextMenu(e, trade.id)} className={`p-[calc(12px*var(--tz))] border-r border-outline-variant flex flex-col justify-center gap-[calc(4px*var(--tz))] relative group/del`}>
         {trade.isCustom && (
           <button 
             onClick={() => onDeleteWeek(trade.id)}
@@ -1447,6 +1454,12 @@ export default function WeeklyJournal() {
   // nothing for it. Aligned with allTrades by position.
   const searchIndex = useMemo(() => (search.trim() ? getSearchIndex(allTrades) : null), [allTrades, search]);
 
+  // Parsed tag search language (2026-11-27, see src/data/searchQuery.js):
+  // tag=(gapup+loss) for days with both tags, tag=(gapup+loss) + loss to
+  // also require 'loss' in the notes, '+' = AND, ',' = OR. Null when the
+  // query is empty or has no terms — then search filters nothing.
+  const parsedQuery = useMemo(() => parseSearchQuery(search), [search]);
+
   const filtered = useMemo(() => {
     return allTrades.filter((t, i) => {
       // 1. Date Filter Logic
@@ -1466,41 +1479,39 @@ export default function WeeklyJournal() {
         if (!passesDateFilter) return false;
       }
 
-      // 2. Search Logic (case-insensitive: the index holds lowercased
-      // haystacks, so this is just `includes()` per field).
-      if (!search.trim()) return true;
-      const q = search.trim().toLowerCase();
+      // 2. Search Logic — the parsed query is evaluated per day against
+      // the lowercased index (tags exact, notes/remarks substrings), so
+      // search stays fully case-insensitive. A week is shown when any of
+      // its days matches the whole query; a 'rem=' term reads the week's
+      // remarks and is true for every day of a matching week.
+      if (!search.trim() || !parsedQuery) return true;
       const e = searchIndex[i];
-      return (
-        e.labelStart.includes(q) ||
-        e.labelEnd.includes(q)   ||
-        e.remarks.includes(q)    ||
-        t.days.some((d) => {
-          const de = e.days[d.day];
-          return de.notes.includes(q) || de.tags.some((tag) => tag.includes(q));
-        })
-      );
+      return t.days.some((d) => {
+        const de = e.days[d.day];
+        return dayMatchesQuery(parsedQuery, { tags: de.tags, notes: de.notes, remarks: e.remarks });
+      });
     });
-  }, [allTrades, dateFilter, search, searchIndex]);
+  }, [allTrades, dateFilter, search, searchIndex, parsedQuery]);
 
   // Search index: the precomputed lowercase index (round-2 improvement
-  // 2), so the highlights cost the same cheap `includes()` scan as the
-  // row filter instead of a second full pass over the raw data.
-  // Query is trimmed + lowercased, haystacks lowercased: search is fully
-  // case-insensitive ("gapup" == "GapUp" == "GAPUP").
+  // 2), so the highlights cost the same cheap scan as the row filter
+  // instead of a second full pass over the raw data. A day cell is
+  // outlined only when it matches the query's day-level terms (a rem-only
+  // query outlines the remarks cell, not the day cells); the remarks
+  // cell is outlined when a rem= term matches the week's remarks. Week
+  // labels are no longer searched — dates are found with GoTo — so no
+  // 'lbl:' hits are produced anymore.
   const searchHits = useMemo(() => {
     const hits = new Set();
-    if (!search.trim() || !searchIndex) return hits;
-    const q = search.trim().toLowerCase();
+    if (!search.trim() || !searchIndex || !parsedQuery) return hits;
     for (const e of searchIndex) {
-      if (e.labelStart.includes(q) || e.labelEnd.includes(q)) hits.add(`lbl:${e.id}`);
-      if (e.remarks.includes(q)) hits.add(`rem:${e.id}`);
+      if (remarksMatchQuery(parsedQuery, e.remarks)) hits.add(`rem:${e.id}`);
       for (const [dayName, de] of Object.entries(e.days)) {
-        if (de.notes.includes(q) || de.tags.some((tag) => tag.includes(q))) hits.add(`day:${e.id}|${dayName}`);
+        if (dayOutlineMatchesQuery(parsedQuery, { tags: de.tags, notes: de.notes })) hits.add(`day:${e.id}|${dayName}`);
       }
     }
     return hits;
-  }, [search, searchIndex]);
+  }, [search, searchIndex, parsedQuery]);
 
   const initialIndex = useMemo(() => {
     if (!targetWeekId) return 0;
@@ -1568,7 +1579,7 @@ export default function WeeklyJournal() {
                   value={searchDraft}
                   onChange={(e) => handleSearchChange(e.target.value)}
                   className="w-full bg-black rounded-full border border-black py-1.5 pl-9 pr-8 text-white font-bold placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-body-md text-body-md text-[13px]"
-                  placeholder="Search remarks, notes, dates…"
+                  placeholder="Search… tag=(gapup+loss) + loss"
                 />
                 {searchDraft && (
                   <button onClick={clearSearch}
