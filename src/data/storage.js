@@ -1369,7 +1369,7 @@ export const setRemarks = (weekId, html) => {
 export const getRemarksText = (weekId, fallback = '') => {
   const html = getRemarks(weekId) ?? fallback;
   if (!html) return '';
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 };
 
 /** First N non-empty lines of the remarks, for the front-page cell.
@@ -1471,11 +1471,45 @@ export const setNotes = (weekId, dayName, html) => {
   scheduleWeekSave(weekId); // notes live in the week document now
 };
 
-/** Plain text extracted from stored notes HTML (for search). */
+/** Decode the HTML entities Quill emits in stored notes/remarks HTML
+ *  (plain spaces re-serialised as &nbsp;, literal & < > " ' as entities).
+ *  Plain regex decode — no DOM — so it stays pure and works in vitest.
+ *  &amp; is decoded LAST so a literal "&nbsp;" typed by the user
+ *  (stored as &amp;nbsp;) decodes exactly once, to the literal text
+ *  "&nbsp;", not to a space. */
+export const decodeHtmlEntities = (html) => html
+  .replace(/&nbsp;/g, ' ')
+  .replace(/&lt;/g, '<')
+  .replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"')
+  .replace(/&#39;|&apos;/g, "'")
+  .replace(/&amp;/g, '&');
+
+/** Normalised form of stored rich-text HTML for equality checks: entities
+ *  decoded, whitespace collapsed, and Quill's empty document (<p><br></p>)
+ *  treated as ''. Two values that differ only by Quill's mount
+ *  re-serialisation (plain spaces → &nbsp;) normalise identically, so a
+ *  read-only editor visit can be told apart from a real edit. The empty
+ *  check looks at TEXT plus media: an image-only document has no text
+ *  either, but it must NOT normalise to '' — pasting a picture into empty
+ *  notes is a real edit and must save (an earlier version of this helper
+ *  collapsed it to '' and silently dropped the paste). */
+export const normalizeRichTextHtml = (html) => {
+  const decoded = decodeHtmlEntities(html ?? '');
+  const text = decoded.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  const hasMedia = /<(img|video|iframe)\b/i.test(decoded);
+  if (!text && !hasMedia) return '';
+  return decoded.replace(/\s+/g, ' ').trim();
+};
+
+/** Plain text extracted from stored notes HTML (for search). Tags are
+ *  stripped BEFORE entities are decoded, so a literal "<" typed by the
+ *  user (stored as &lt;) survives as "<" in the text instead of being
+ *  eaten as a tag. */
 export const getNotesText = (weekId, dayName, fallback = '') => {
   const html = getNotes(weekId, dayName) ?? fallback;
   if (!html) return '';
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 };
 
 /* ─── Trade Tags (Array of strings) ─── */

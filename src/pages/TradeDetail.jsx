@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect, useMemo, lazy, Suspense } fro
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById, DAYS } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls, getExtraWeeks } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, normalizeRichTextHtml, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls, getExtraWeeks } from '../data/storage.js';
 import { exportChartPng } from '../data/exportChart.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
@@ -1152,10 +1152,22 @@ export default function TradeDetail() {
     if (focus) setEditorAutoFocus(true);
   }, []);
 
+  // A read-only visit must not rewrite the stored notes: Quill
+  // re-serialises the loaded HTML on mount (plain spaces become &nbsp;)
+  // and ReactQuill fires onChange for it, so persistNotes used to save
+  // that re-serialisation straight back — the notes changed without the
+  // user typing a word, the search index rebuilt, and (before
+  // getNotesText decoded entities) a multi-word notes search stopped
+  // matching the visited day. Only persist when the value really
+  // changed, compared after entity/whitespace normalisation — so a
+  // format-only edit (bolding a word) still saves, while the mount
+  // echo does not, and the "Saved ✓" flash only fires on a real save.
   const persistNotes = useCallback((val) => {
     setNotesContent(val);
-    setNotes(weekId, dayName, val);
-    triggerSaveIndicator();
+    if (normalizeRichTextHtml(val) !== normalizeRichTextHtml(getNotes(weekId, dayName) ?? '')) {
+      setNotes(weekId, dayName, val);
+      triggerSaveIndicator();
+    }
   }, [weekId, dayName, triggerSaveIndicator]);
 
   /* ── Trade Date ── */

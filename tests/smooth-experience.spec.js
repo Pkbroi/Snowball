@@ -89,7 +89,7 @@ test.describe('Smooth experience (v2)', () => {
     const searchInput = page.getByTestId('search-input');
     await searchInput.fill('ZEBRA42');
     const firstDayCell = page.locator('[data-testid^="day-cell-"]').first();
-    await expect(firstDayCell).toHaveClass(/ring-amber-400/);
+    await expect(firstDayCell).toHaveClass(/ring-blue-700/);
     await searchInput.fill('NonExistentQuery1234');
     await expect(page.locator('[data-testid^="day-cell-"]')).toHaveCount(0);
     await expect(page.getByText('No rows matched')).toBeVisible();

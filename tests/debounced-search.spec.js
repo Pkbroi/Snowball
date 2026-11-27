@@ -34,7 +34,7 @@ test.describe('Debounced search (perf step 11)', () => {
     await expect.poll(() => page.url(), { timeout: 5000 }).toContain('q=gapup');
     const outlined = await page.evaluate(() => [...document.querySelectorAll(
       '[data-testid^="day-cell-"], [data-testid^="remarks-cell-"], [data-testid^="week-label-"]',
-    )].filter((el) => el.className.includes('ring-amber-400'))
+    )].filter((el) => el.className.includes('ring-blue-700'))
       .map((el) => el.getAttribute('data-testid')));
     expect(outlined).toEqual(expect.arrayContaining([
       `day-cell-${A}-Monday`, `day-cell-${C}-Monday`,

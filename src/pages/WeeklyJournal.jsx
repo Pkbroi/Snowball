@@ -16,7 +16,7 @@ import {
   getExtraWeeks, setExtraWeeks, deleteWeekData,
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
-  subscribeThumbs, resolveMediumAsync, getSearchIndex, flushWeekDoc,
+  subscribeThumbs, resolveMediumAsync, getSearchIndex, flushWeekDoc, normalizeRichTextHtml,
   hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction
 } from '../data/storage.js';
 
@@ -36,8 +36,14 @@ function RemarksModal({ trade, onClose }) {
   const [saveStatus, setSaveStatus] = useState('');
   const timeoutRef = useRef(null);
 
+  // Same mount echo as the detail page's notes (see persistNotes in
+  // TradeDetail.jsx): Quill re-serialises the loaded remarks on mount
+  // (plain spaces → &nbsp;) and fires onChange for it, so opening the
+  // modal used to rewrite the stored remarks without the user typing.
+  // Only persist — and only flash the save status — on a real change.
   const handleChange = (val) => {
     setContent(val);
+    if (normalizeRichTextHtml(val) === normalizeRichTextHtml(getRemarks(trade.id) ?? '')) return;
     setRemarks(trade.id, val);
 
     setSaveStatus('Saving...');
@@ -258,7 +264,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
       <div
         ref={cellRef}
         tabIndex={0}
-        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
+        className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-blue-700 bg-blue-700/10' : ''}`}
         data-testid={`day-cell-${weekId}-${day.day}`}
         onDoubleClick={goToDetail}
         onMouseEnter={handleMouseEnter}
@@ -295,7 +301,7 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     <div
       ref={cellRef}
       tabIndex={0}
-      className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
+      className={`relative border-r border-[#424242] overflow-hidden p-[calc(4px*var(--tz))] outline-none cursor-pointer focus:ring-1 focus:ring-inset focus:ring-outline transition-colors aspect-[1916/1000] ${matchesSearch ? 'ring-2 ring-inset ring-blue-700 bg-blue-700/10' : ''}`}
       data-testid={`day-cell-${weekId}-${day.day}`}
       onDoubleClick={goToDetail}
       onMouseEnter={handleMouseEnter}
@@ -472,7 +478,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWe
 
       {/* ── Remarks — click to expand ── */}
       <div 
-        className={`p-[calc(12px*var(--tz))] flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors ${remarksMatch ? 'ring-2 ring-inset ring-amber-400 bg-amber-400/10' : ''}`}
+        className={`p-[calc(12px*var(--tz))] flex items-start relative group/rem cursor-pointer hover:bg-surface-bright transition-colors ${remarksMatch ? 'ring-2 ring-inset ring-blue-700 bg-blue-700/10' : ''}`}
         data-testid={`remarks-cell-${trade.id}`}
         onClick={() => onOpenRemarks(trade)}
         title="Click to add or edit remarks"

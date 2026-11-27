@@ -21,7 +21,7 @@ async function search(page, q) {
       .map((r) => r.getAttribute('data-testid').replace('week-row-', '')),
     outlined: [...document.querySelectorAll(
       '[data-testid^="day-cell-"], [data-testid^="remarks-cell-"], [data-testid^="week-label-"]',
-    )].filter((el) => el.className.includes('ring-amber-400'))
+    )].filter((el) => el.className.includes('ring-blue-700'))
       .map((el) => el.getAttribute('data-testid')),
   }));
 }
