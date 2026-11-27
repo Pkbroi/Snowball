@@ -20,6 +20,11 @@ import { makeChartPng } from './helpers/chart-png.js';
 // delete (×) button on the top dotted line — no second box around it.
 // A single click puts the cursor inside the box. The size is stored
 // per box.
+// Trend line (TradingView-style): two clicks draw a diagonal line; a
+// dashed preview follows the cursor after the first click; clicking the
+// line selects it (amber, dots at both ends); dragging a dot stretches
+// that end; double-click and drag moves the whole line. See
+// tests/trendline.spec.js for its own specs.
 async function openLightboxWithChart(page, testInfo) {
   const fixture = path.join(testInfo.outputDir, 'chart-2560x1440.png');
   fs.mkdirSync(testInfo.outputDir, { recursive: true });
@@ -49,7 +54,7 @@ async function drawPencilStroke(page, overlay, x1, y1, x2, y2) {
 }
 
 test.describe('Chart annotations (v4.5)', () => {
-  test('toolbar is icons only, with the line, pencil, 4 entry/exit arrows and yellow marker', async ({ page }, testInfo) => {
+  test('toolbar is icons only, with the line, trend line, pencil, 4 entry/exit arrows and yellow marker', async ({ page }, testInfo) => {
     await openLightboxWithChart(page, testInfo);
     const toolbar = page.getByTestId('ann-toolbar');
     // No word labels anywhere on the bar — the symbols are enough.
@@ -57,7 +62,7 @@ test.describe('Chart annotations (v4.5)', () => {
     await expect(toolbar).not.toContainText('EXIT');
     await expect(toolbar).not.toContainText('GREEN');
     await expect(toolbar).not.toContainText('RED');
-    for (const tool of ['select', 'line', 'pencil', 'arrow-green-up', 'arrow-green-down', 'arrow-red-up', 'arrow-red-down', 'arrow-yellow', 'comment']) {
+    for (const tool of ['select', 'line', 'trendline', 'pencil', 'arrow-green-up', 'arrow-green-down', 'arrow-red-up', 'arrow-red-down', 'arrow-yellow', 'comment']) {
       await expect(page.getByTestId(`ann-tool-${tool}`)).toBeVisible();
     }
     // Arming a tool inverts it; clicking it again disarms back to select.

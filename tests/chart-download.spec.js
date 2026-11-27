@@ -29,8 +29,8 @@ async function openLightboxWithChart(page, testInfo) {
   await expect(page.getByTestId('ann-overlay')).toBeVisible({ timeout: 15000 });
 }
 
-// One of every mark type: a horizontal line, a green up arrow, a comment
-// with text, and a pencil stroke.
+// One of every mark type: a horizontal line, a trend line, a green up
+// arrow, a comment with text, and a pencil stroke.
 async function placeAllMarks(page) {
   const overlay = page.getByTestId('ann-overlay');
   const box = await overlay.boundingBox();
@@ -39,6 +39,11 @@ async function placeAllMarks(page) {
   await page.getByTestId('ann-tool-line').click();
   await page.mouse.click(...at(50, 70));
   await expect(page.locator('[data-testid="ann-mark"][data-ann-type="line"]')).toHaveCount(1);
+
+  await page.getByTestId('ann-tool-trendline').click();
+  await page.mouse.click(...at(55, 15));
+  await page.mouse.click(...at(85, 40));
+  await expect(page.locator('[data-testid="ann-mark"][data-ann-type="trendline"]')).toHaveCount(1);
 
   await page.getByTestId('ann-tool-arrow-green-up').click();
   await page.mouse.click(...at(30, 30));
@@ -93,6 +98,9 @@ async function samplePng(page, filePath) {
       width: img.naturalWidth,
       height: img.naturalHeight,
       lineDarkest: darkest,
+      // Trend line blue #2962ff (41,98,255) near its midpoint (1792, 396):
+      // grid blue (74,143,255) fails r<60 and g<120; background fails b>240.
+      trendlineBlue: countWhere(1700, 330, 1900, 460, (r, g, b) => r < 60 && g > 80 && g < 120 && b > 240),
       // Green arrow body: g high, r/b low. Grid blue (74,143,255) fails g>150.
       arrowGreen: countWhere(740, 430, 800, 505, (r, g, b) => g > 150 && r < 100 && b < 150),
       // White comment text: all channels >200. Grid blue fails r>200.
@@ -152,6 +160,7 @@ test.describe('Chart download (full-quality PNG with markers)', () => {
     expect(s.width).toBe(2560);
     expect(s.height).toBe(1440);
     expect(s.lineDarkest).toBeLessThanOrEqual(6); // the black line
+    expect(s.trendlineBlue).toBeGreaterThan(50); // the blue trend line
     expect(s.arrowGreen).toBeGreaterThan(50);
     expect(s.commentWhite).toBeGreaterThan(20);
     expect(s.pencilWhite).toBeGreaterThan(100);
@@ -168,7 +177,7 @@ test.describe('Chart download (full-quality PNG with markers)', () => {
     await page.getByTestId('chart-download-btn').click();
     await page.waitForTimeout(500);
     await expect(page.getByTestId('chart-lightbox')).toBeVisible();
-    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(4);
+    await expect(page.locator('[data-testid="ann-mark"]')).toHaveCount(5);
   });
 
   test('without the dialog API it falls back to a Downloads-folder download', async ({ page }, testInfo) => {

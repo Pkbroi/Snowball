@@ -133,6 +133,25 @@ function drawComment(ctx, ann, W, H, scale) {
   ctx.restore();
 }
 
+function drawTrendline(ctx, ann, W, H, scale) {
+  const x1 = (ann.x1 / 100) * W;
+  const y1 = (ann.y1 / 100) * H;
+  const x2 = (ann.x2 / 100) * W;
+  const y2 = (ann.y2 / 100) * H;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.65)';
+  ctx.shadowBlur = 3 * scale;
+  ctx.shadowOffsetY = 1 * scale;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = '#2962ff';
+  ctx.lineWidth = 2.5 * scale;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawPencil(ctx, ann, W, H, scale) {
   const pts = (ann.points ?? []).map(([px, py]) => [(px / 100) * W, (py / 100) * H]);
   if (pts.length === 0) return;
@@ -169,6 +188,7 @@ function drawPencil(ctx, ann, W, H, scale) {
 // Draws one stored mark onto ctx. W/H are the canvas (native) size.
 export function drawAnnotation(ctx, ann, W, H, scale) {
   if (ann.type === 'line') drawLine(ctx, ann, W, H, scale);
+  else if (ann.type === 'trendline') drawTrendline(ctx, ann, W, H, scale);
   else if (ann.type === 'comment') drawComment(ctx, ann, W, H, scale);
   else if (ann.type === 'pencil') drawPencil(ctx, ann, W, H, scale);
   else drawArrow(ctx, ann, W, H, scale);

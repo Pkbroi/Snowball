@@ -75,6 +75,19 @@ function AnnPencil({ size = 20 }) {
   );
 }
 
+// Trend line icon for the toolbar (TradingView-style): a diagonal line
+// with a dot at each end, black with a white outline like the pencil.
+function AnnTrendline({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <line x1="5" y1="19" x2="19" y2="5" stroke="#ffffff" strokeWidth="3.5" strokeLinecap="round" />
+      <line x1="5" y1="19" x2="19" y2="5" stroke="#000000" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="5" cy="19" r="2.6" fill="#000000" stroke="#ffffff" strokeWidth="1" />
+      <circle cx="19" cy="5" r="2.6" fill="#000000" stroke="#ffffff" strokeWidth="1" />
+    </svg>
+  );
+}
+
 // A freehand pencil stroke: points are [[x, y], ...] in % of the displayed
 // picture. A bold black core over a wider white edge, so the black stays
 // visible on dark charts. vector-effect keeps the stroke width in px even
@@ -383,7 +396,13 @@ export default function TradeDetail() {
      'arrow-green-up' | 'arrow-green-down' (entry), 'arrow-red-up' |
      'arrow-red-down' (exit), 'arrow-yellow' (spot marker), 'comment',
      and 'pencil' — a freehand stroke, { id, type: 'pencil', points }
-     with points as [[x, y], ...] in % of the picture. Stored per
+     with points as [[x, y], ...] in % of the picture. 'trendline' is a
+     TradingView-style diagonal line, { id, type: 'trendline', x1, y1,
+     x2, y2 } with both endpoints in %: two clicks draw it (the first
+     pins the start, the second pins the end, with a dashed preview
+     following the cursor in between); double-click and drag moves the
+     whole line; when it is selected, a dot shows at each end, and
+     dragging a dot stretches that end to where it is dropped. Stored per
      week+day (storage.js) so marks survive reload and are included in
      the whole-database backup. The overlay is sized to the displayed
      picture rect, so % coords stay glued to the chart under pan/zoom.
@@ -414,6 +433,13 @@ export default function TradeDetail() {
   const dblDragRef = useRef(null);
   // A resize drag on a comment box's dotted frame.
   const resizeDragRef = useRef(null);
+  // The trend line's first point is set; the second follows the cursor.
+  const [trendDraft, setTrendDraft] = useState(null);
+  const trendDraftRef = useRef(null);
+  // A double-click press on a trend line that may become a move-drag.
+  const trendMoveRef = useRef(null);
+  // An endpoint-dot drag on a selected trend line.
+  const trendEndRef = useRef(null);
   // A click that places a mark fires on the nearest common ancestor of
   // the mousedown/mouseup targets — the overlay, not the new mark — so
   // without this the click right after placing a comment (which disarms
@@ -565,6 +591,80 @@ export default function TradeDetail() {
     setClearArmed(false);
   }, [annTool, annotations, persistAnnotations, pointToPct]);
 
+  // Trend line (TradingView-style): two clicks set the endpoints — the
+  // first click pins the start, the second pins the end and stores the
+  // line. While the second point is pending, a dashed preview follows
+  // the cursor. A second click within ~1.5% of the first is ignored (a
+  // double-click at one spot is not a line).
+  const handleTrendlineClick = useCallback((e) => {
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    const d = trendDraftRef.current;
+    if (!d) {
+      trendDraftRef.current = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+      setTrendDraft({ ...trendDraftRef.current });
+      return;
+    }
+    if (Math.hypot(p.x - d.x1, p.y - d.y1) < 1.5) return;
+    trendDraftRef.current = null;
+    setTrendDraft(null);
+    justPlacedRef.current = Date.now();
+    const nid = `ann_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    persistAnnotations([...annotations, { id: nid, type: 'trendline', x1: d.x1, y1: d.y1, x2: p.x, y2: p.y }]);
+    setAnnTool('select');
+    setClearArmed(false);
+  }, [annotations, persistAnnotations, pointToPct]);
+
+  const moveTrendDraft = (e) => {
+    const d = trendDraftRef.current;
+    if (!d) return;
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    d.x2 = p.x;
+    d.y2 = p.y;
+    setTrendDraft({ ...d });
+  };
+
+  // Leaving the trendline tool cancels a half-drawn line (Escape, the
+  // tool button toggled off, or the line just placed).
+  useEffect(() => {
+    if (annTool !== 'trendline') {
+      trendDraftRef.current = null;
+      setTrendDraft(null);
+    }
+  }, [annTool]);
+
+  // Stretch a selected trend line by its endpoint dots: grab a dot and
+  // the line extends to wherever it is dropped. The dot stops
+  // propagation, so the line-body handlers never see the drag.
+  const startTrendEndDrag = (e, ann, end) => {
+    if (annTool !== 'select' || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedAnnId(ann.id);
+    setAnnMenuId(null);
+    trendEndRef.current = { id: ann.id, end, pointerId: e.pointerId, latest: null };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onTrendEndPointerMove = (e) => {
+    const d = trendEndRef.current;
+    if (!d || d.pointerId !== e.pointerId || !picRect) return;
+    const p = pointToPct(e.clientX, e.clientY);
+    if (!p) return;
+    const next = annotations.map((a) => {
+      if (a.id !== d.id) return a;
+      return d.end === 'start' ? { ...a, x1: p.x, y1: p.y } : { ...a, x2: p.x, y2: p.y };
+    });
+    d.latest = next;
+    setAnnotationsState(next);
+  };
+  const onTrendEndPointerUp = (e) => {
+    const d = trendEndRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    trendEndRef.current = null;
+    if (d.latest) persistAnnotations(d.latest);
+  };
+
   // Pencil drawing: pointerdown starts a stroke, pointermove extends it,
   // pointerup stores it. Unlike the one-shot tools, the pencil stays
   // armed afterwards — tap the pencil button again (or Escape) to stop.
@@ -649,6 +749,14 @@ export default function TradeDetail() {
     const next = annotations.map((a) => {
       if (a.id !== d.id) return a;
       if (a.type === 'line') return { ...a, y: clamp01(d.origY + dyPct) };
+      if (a.type === 'trendline') {
+        // Move the whole line: shift both endpoints by the same delta,
+        // clamped so neither endpoint leaves the chart.
+        const ox1 = d.origX1 ?? a.x1, oy1 = d.origY1 ?? a.y1, ox2 = d.origX2 ?? a.x2, oy2 = d.origY2 ?? a.y2;
+        const dx = Math.max(-Math.min(ox1, ox2), Math.min(dxPct, 100 - Math.max(ox1, ox2)));
+        const dy = Math.max(-Math.min(oy1, oy2), Math.min(dyPct, 100 - Math.max(oy1, oy2)));
+        return { ...a, x1: ox1 + dx, y1: oy1 + dy, x2: ox2 + dx, y2: oy2 + dy };
+      }
       if (a.type === 'pencil' && d.origPoints) return { ...a, points: d.origPoints.map(([px, py]) => [clamp01(px + dxPct), clamp01(py + dyPct)]) };
       return { ...a, x: clamp01(d.origX + dxPct), y: clamp01(d.origY + dyPct) };
     });
@@ -1169,6 +1277,7 @@ export default function TradeDetail() {
             >
               {annToolBtn('select', 'Select / move', <span className="material-symbols-outlined text-[20px]">near_me</span>)}
               {annToolBtn('line', 'Horizontal line', <span className="material-symbols-outlined text-[20px]">horizontal_rule</span>)}
+              {annToolBtn('trendline', 'Trend line — click twice to draw', <AnnTrendline size={20} />)}
               {annToolBtn('pencil', 'Pencil — draw freehand', <AnnPencil size={20} />)}
               <div className="h-6 border-l border-outline-variant/50" />
               {annToolBtn('arrow-green-up', 'Green up arrow — entry', <AnnArrow color="#22c55e" dir="up" size={20} />)}
@@ -1222,6 +1331,14 @@ export default function TradeDetail() {
                   startPencilDraw(e);
                   return;
                 }
+                if (annTool === 'trendline' && e.button === 0) {
+                  // Two clicks pin the trend line's endpoints (see
+                  // handleTrendlineClick); the second click stores it.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleTrendlineClick(e);
+                  return;
+                }
                 if (annTool !== 'select' && e.button === 0) {
                   // preventDefault stops the compatibility mousedown whose
                   // default action would blur the comment box React just
@@ -1233,7 +1350,7 @@ export default function TradeDetail() {
                 // Select mode: let the event bubble to the container (pan / backdrop close).
                 // A right-click never places — it is for the mark menu instead.
               }}
-              onPointerMove={movePencilDraw}
+              onPointerMove={(e) => { movePencilDraw(e); moveTrendDraft(e); }}
               onPointerUp={endPencilDraw}
               onPointerCancel={endPencilDraw}
               onClick={(e) => {
@@ -1266,6 +1383,84 @@ export default function TradeDetail() {
                         </>
                       )}
                       {annDeleteBtn(a, 'right-2 -top-3')}
+                    </div>
+                  );
+                }
+                if (a.type === 'trendline') {
+                  // TradingView-style diagonal line: a blue segment with
+                  // a wide invisible hit line so it is easy to grab and
+                  // right-click. A plain click selects it (showing the
+                  // endpoint dots); double-click and drag moves the whole
+                  // line; dragging a dot stretches that end. The delete
+                  // (×) rides on the higher endpoint.
+                  const top = a.y1 <= a.y2 ? { x: a.x1, y: a.y1 } : { x: a.x2, y: a.y2 };
+                  const dot = (end, x, y) => (
+                    <div key={end}
+                      data-testid={`ann-trendline-dot-${end}`}
+                      className="pointer-events-auto absolute h-3.5 w-3.5 rounded-full bg-white border-2 border-[#2962ff] shadow cursor-grab touch-none"
+                      style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => startTrendEndDrag(e, a, end)}
+                      onPointerMove={onTrendEndPointerMove}
+                      onPointerUp={onTrendEndPointerUp}
+                      onPointerCancel={onTrendEndPointerUp}
+                    />
+                  );
+                  return (
+                    <div key={a.id} data-testid="ann-mark" data-ann-type="trendline"
+                      className="absolute inset-0 pointer-events-none"
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        if (annTool !== 'select' || e.button !== 0) return;
+                        if (e.detail === 2) {
+                          // Same double-click-then-drag as a comment box
+                          // (Chromium reports pointerdown detail as 0, so
+                          // the count is read from mousedown): the second
+                          // press arms a move that only starts once the
+                          // pointer actually moves.
+                          trendMoveRef.current = { id: a.id, startX: e.clientX, startY: e.clientY, origX1: a.x1, origY1: a.y1, origX2: a.x2, origY2: a.y2 };
+                        }
+                      }}
+                      onPointerMove={(e) => {
+                        if (trendEndRef.current) return;
+                        const m = trendMoveRef.current;
+                        if (m && m.id === a.id) {
+                          if (Math.hypot(e.clientX - m.startX, e.clientY - m.startY) > 7) {
+                            // The double-click became a drag: move the line.
+                            trendMoveRef.current = null;
+                            annDragRef.current = { id: m.id, pointerId: e.pointerId, startX: m.startX, startY: m.startY, origX1: m.origX1, origY1: m.origY1, origX2: m.origX2, origY2: m.origY2, origPoints: null, moved: true, latest: null };
+                            e.currentTarget.setPointerCapture?.(e.pointerId);
+                            onAnnPointerMove(e);
+                          }
+                          return;
+                        }
+                        onAnnPointerMove(e);
+                      }}
+                      onPointerUp={(e) => { trendMoveRef.current = null; onAnnPointerUp(e); }}
+                      onPointerCancel={(e) => { trendMoveRef.current = null; onAnnPointerUp(e); }}
+                    >
+                      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                        <line x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} fill="none" stroke={selected ? '#fbbf24' : '#2962ff'} strokeWidth={selected ? 3 : 2.5} strokeLinecap="round" vectorEffect="non-scaling-stroke" style={{ pointerEvents: 'none', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.65))' }} />
+                        <line x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} fill="none" stroke="rgba(0,0,0,0)" strokeWidth="18" strokeLinecap="round" vectorEffect="non-scaling-stroke"
+                          style={{ pointerEvents: 'stroke', cursor: 'move' }}
+                          onPointerDown={(e) => {
+                            if (annTool !== 'select') return;
+                            e.stopPropagation();
+                            setSelectedAnnId(a.id);
+                            setAnnMenuId(null);
+                            setClearArmed(false);
+                            // Capture so the double-click-drag's moves keep
+                            // reaching this mark's container after the
+                            // pointer leaves the thin line — without it,
+                            // moves target the overlay and the move never
+                            // starts.
+                            e.currentTarget.setPointerCapture?.(e.pointerId);
+                          }}
+                          onContextMenu={(e) => onAnnContextMenu(e, a)}
+                        />
+                      </svg>
+                      {selected && (<>{dot('start', a.x1, a.y1)}{dot('end', a.x2, a.y2)}</>)}
+                      {annDeleteBtn(a, '', { left: `${top.x}%`, top: `${top.y}%`, transform: 'translate(-50%, -50%)' })}
                     </div>
                   );
                 }
@@ -1412,6 +1607,17 @@ export default function TradeDetail() {
               })}
               {/* The stroke being drawn right now (live preview). */}
               {pencilDraft && <PencilStroke points={pencilDraft} selected={false} />}
+              {/* The trend line being drawn right now: a dashed preview
+                  from the pinned first point to the cursor, with a dot
+                  on the pinned point. */}
+              {trendDraft && (
+                <>
+                  <svg data-testid="ann-trendline-draft" className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <line x1={trendDraft.x1} y1={trendDraft.y1} x2={trendDraft.x2} y2={trendDraft.y2} fill="none" stroke="#2962ff" strokeWidth="2.5" strokeDasharray="6 4" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                  </svg>
+                  <div className="pointer-events-none absolute h-3 w-3 rounded-full bg-white border-2 border-[#2962ff]" style={{ left: `${trendDraft.x1}%`, top: `${trendDraft.y1}%`, transform: 'translate(-50%, -50%)' }} />
+                </>
+              )}
             </div>
           )}
           {/* Zoom controls */}
@@ -1603,6 +1809,17 @@ export default function TradeDetail() {
                           style={{ left: `${a.x}%`, top: `${a.y}%`, width: a.w ?? 180, height: a.h ?? undefined, overflow: a.h ? 'hidden' : undefined }}
                         >
                           {a.text}
+                        </div>
+                      );
+                    }
+                    if (a.type === 'trendline') {
+                      return (
+                        <div key={a.id} data-testid="inline-ann-mark" data-ann-type="trendline"
+                          className="absolute inset-0 pointer-events-none"
+                        >
+                          <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                            <line x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} fill="none" stroke="#2962ff" strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.65))' }} />
+                          </svg>
                         </div>
                       );
                     }
