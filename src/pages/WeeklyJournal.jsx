@@ -17,8 +17,58 @@ import {
   exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
   subscribeThumbs, resolveMediumAsync, getSearchIndex, flushWeekDoc, normalizeRichTextHtml,
-  hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction
+  hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction,
+  getRuleScores, getParameters
 } from '../data/storage.js';
+import { scoreParamMap, scoreVerdict } from '../data/rules.js';
+
+/* ── Evaluation report face ──
+   The back of a day cell in Evaluation view: the day's total score,
+   one ✓ / ✗ / – chip per parameter (hover shows the parameter name),
+   and the followed/broke count. Green when the total is above zero,
+   red when below, grey when unscored or zero. */
+function EvalReportFace({ scores }) {
+  const params = getParameters();
+  const { total, followed, broke, answered } = scoreParamMap(params, scores);
+  const verdict = scoreVerdict(params, scores);
+  return (
+    <div
+      className={`absolute inset-0 rounded border flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] overflow-hidden ${verdict === 'positive' ? 'bg-[#22c55e]/15 border-[#22c55e]/70' : verdict === 'negative' ? 'bg-[#ef4444]/15 border-[#ef4444]/70' : 'bg-surface-container-lowest border-outline-variant/50'}`}
+      style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+    >
+      {answered === 0 ? (
+        <span className="text-white/40 font-label-md text-[calc(9px*var(--tz))] uppercase tracking-wide text-center px-[calc(4px*var(--tz))]">Not scored yet</span>
+      ) : (
+        <>
+          <span
+            className={`font-bold tabular-nums leading-none ${verdict === 'positive' ? 'text-[#22c55e]' : verdict === 'negative' ? 'text-[#ef4444]' : 'text-white'}`}
+            style={{ fontSize: 'calc(24px*var(--tz))' }}
+          >
+            {total > 0 ? `+${total}` : `${total}`}
+          </span>
+          <span className="flex flex-wrap items-center justify-center gap-[calc(2px*var(--tz))] px-[calc(4px*var(--tz))]">
+            {params.map((param) => {
+              const v = scores[param.id] ?? 0;
+              return (
+                <span
+                  key={param.id}
+                  title={`${param.short}: ${v === 1 ? 'followed' : v === -1 ? 'broke' : 'n/a'}`}
+                  className={`w-[calc(15px*var(--tz))] h-[calc(15px*var(--tz))] flex items-center justify-center rounded-[calc(3px*var(--tz))] font-bold ${v === 1 ? 'bg-[#22c55e] text-black' : v === -1 ? 'bg-[#ef4444] text-white' : 'bg-[#2f2f2f] text-white/50'}`}
+                  style={{ fontSize: 'calc(10px*var(--tz))' }}
+                >
+                  {v === 1 ? '✓' : v === -1 ? '✗' : '–'}
+                </span>
+              );
+            })}
+          </span>
+          <span className="font-label-md text-[calc(9px*var(--tz))] text-white/50">
+            {followed} followed · {broke} broke
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
 
 
 
@@ -128,7 +178,7 @@ const OutcomeBadge = memo(function OutcomeBadge({ outcome }) {
 /* ═══════════════════════════════════════════
    DayCell
 ═══════════════════════════════════════════ */
-const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search, matchesSearch = false, thumbsVersion }) {
+const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks, search, matchesSearch = false, thumbsVersion, evaluation = false }) {
   const navigate = useNavigate();
   // Synchronous, zero-latency retrieval from pre-cached memory!
   // NOTE: this is intentionally the 480px THUMBNAIL, not the full image.
@@ -259,6 +309,12 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
     if (file) await saveFile(file);
   }, [saveFile]);
 
+  // Rule-check scores for this day: read fresh on every render —
+  // the evaluation toggle re-renders the cells, and a return from the
+  // detail page remounts the journal, so the flip always shows the
+  // latest scores.
+  const ruleScores = getRuleScores(weekId, day.day);
+
   if (cellImg) {
     return (
       <div
@@ -279,13 +335,19 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
         onPaste={handlePaste}
         onClick={() => cellRef.current?.focus()}
         title="Double-click to open detail · drag/drop or paste an image to replace"
+        style={{ perspective: '900px' }}
       >
-        <div className="absolute inset-[calc(4px*var(--tz))] border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden">
-          <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
-            fetchPriority="low" draggable={false} onLoad={() => setImgLoaded(true)}
-            onError={() => setImgLoaded(true)}
-            className={`w-full h-full object-cover transition-opacity duration-300 hover:opacity-100 ${imgLoaded ? 'opacity-90' : 'opacity-0'}`} />
-          <OutcomeBadge outcome={day.outcome} />
+        {/* Evaluation flip: the chart face and the report face share
+            this box; the toggle rotates the inner wrapper 180°. */}
+        <div className="absolute inset-[calc(4px*var(--tz))]" style={{ transformStyle: 'preserve-3d', transform: evaluation ? 'rotateY(180deg)' : 'rotateY(0deg)', transition: 'transform 0.6s ease' }}>
+          <div className="absolute inset-0 border border-outline-variant/50 rounded bg-surface-container-lowest overflow-hidden" style={{ backfaceVisibility: 'hidden' }}>
+            <img alt={`${day.day} chart`} src={cellImg} decoding="async" loading="lazy"
+              fetchPriority="low" draggable={false} onLoad={() => setImgLoaded(true)}
+              onError={() => setImgLoaded(true)}
+              className={`w-full h-full object-cover transition-opacity duration-300 hover:opacity-100 ${imgLoaded ? 'opacity-90' : 'opacity-0'}`} />
+            <OutcomeBadge outcome={day.outcome} />
+          </div>
+          <EvalReportFace scores={ruleScores} />
         </div>
         {dragging && (
           <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] bg-black/60">
@@ -312,19 +374,24 @@ const DayCell = memo(function DayCell({ day, weekId, weekStart, weekEnd, remarks
       onPaste={handlePaste}
       onClick={() => cellRef.current?.focus()}
       title="Double-click to open · drag/drop or paste an image · click then Ctrl+V"
+      style={{ perspective: '900px' }}
     >
-      <div className={`absolute inset-[calc(4px*var(--tz))] rounded border flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] transition-colors ${
-        dragging
-          ? 'border-primary bg-surface-container-high border-solid'
-          : 'border-outline-variant/50 border-dashed bg-surface-container-lowest'
-      }`}>
-        {dragging
-          ? <span className="material-symbols-outlined text-[calc(20px*var(--tz))] text-primary">file_upload</span>
-          : <>
-              <span className="text-on-surface-variant/40 font-label-md text-[calc(9px*var(--tz))] uppercase tracking-wide text-center px-[calc(4px*var(--tz))]">No Trade</span>
-              <span className="text-on-surface-variant/25 font-label-md text-[calc(8px*var(--tz))] text-center px-[calc(4px*var(--tz))]">drop / paste</span>
-            </>
-        }
+      {/* Evaluation flip: same box, report on the back face. */}
+      <div className="absolute inset-[calc(4px*var(--tz))]" style={{ transformStyle: 'preserve-3d', transform: evaluation ? 'rotateY(180deg)' : 'rotateY(0deg)', transition: 'transform 0.6s ease' }}>
+        <div className={`absolute inset-0 rounded border flex flex-col items-center justify-center gap-[calc(2px*var(--tz))] transition-colors ${
+          dragging
+            ? 'border-primary bg-surface-container-high border-solid'
+            : 'border-outline-variant/50 border-dashed bg-surface-container-lowest'
+        }`} style={{ backfaceVisibility: 'hidden' }}>
+          {dragging
+            ? <span className="material-symbols-outlined text-[calc(20px*var(--tz))] text-primary">file_upload</span>
+            : <>
+                <span className="text-on-surface-variant/40 font-label-md text-[calc(9px*var(--tz))] uppercase tracking-wide text-center px-[calc(4px*var(--tz))]">No Trade</span>
+                <span className="text-on-surface-variant/25 font-label-md text-[calc(8px*var(--tz))] text-center px-[calc(4px*var(--tz))]">drop / paste</span>
+              </>
+          }
+        </div>
+        <EvalReportFace scores={ruleScores} />
       </div>
     </div>
   );
@@ -350,7 +417,7 @@ function createEmptyWeek() {
   };
 }
 
-const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWeekContextMenu, search, gridCols, searchHits, remarksVersion, thumbsVersion }) {
+const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWeekContextMenu, search, gridCols, searchHits, remarksVersion, thumbsVersion, evaluation = false }) {
   const startRef  = useRef(null);
   const endRef    = useRef(null);
 
@@ -473,6 +540,7 @@ const WeekRow = memo(function WeekRow({ trade, onOpenRemarks, onDeleteWeek, onWe
           search={search}
           matchesSearch={searchHits ? searchHits.has(`day:${trade.id}|${day.day}`) : false}
           thumbsVersion={thumbsVersion}
+          evaluation={evaluation}
         />
       ))}
 
@@ -1068,6 +1136,11 @@ export default function WeeklyJournal() {
 
   const gridBottomRef = useRef(null);
   const virtuosoRef = useRef(null);
+
+  // Charts vs Evaluation view: 'charts' keeps the current grid;
+  // 'evaluation' flips every day cell to its rule-check report.
+  const [viewMode, setViewMode] = useState('charts');
+  const evaluation = viewMode === 'evaluation';
   // True only until the first mount commits: a zoom change remounts
   // Virtuoso (key={tableZoom} below) and must NOT re-apply
   // initialTopMostItemIndex, or the list would jump back to the top.
@@ -1668,6 +1741,23 @@ export default function WeeklyJournal() {
 
             {/* Right: zoom + add-row + settings */}
             <div className="flex items-center gap-2 text-on-surface-variant shrink-0">
+              {/* Charts / Evaluation switch — the current grid stays the charts page */}
+              <div className="flex items-center bg-black border border-black rounded-full p-0.5" data-testid="view-mode-toggle">
+                <button
+                  onClick={() => setViewMode('charts')}
+                  data-testid="view-charts-btn"
+                  className={`text-[12px] font-bold rounded-full px-3 py-1.5 ${viewMode === 'charts' ? 'bg-white text-black' : 'text-white/60'}`}
+                >
+                  Charts
+                </button>
+                <button
+                  onClick={() => setViewMode('evaluation')}
+                  data-testid="view-evaluation-btn"
+                  className={`text-[12px] font-bold rounded-full px-3 py-1.5 ${viewMode === 'evaluation' ? 'bg-white text-black' : 'text-white/60'}`}
+                >
+                  Evaluation
+                </button>
+              </div>
               {/* Zoom controls */}
               <div className="flex items-center gap-1 bg-black border border-black rounded-full px-1 py-0.5">
                 <button
@@ -1802,6 +1892,7 @@ export default function WeeklyJournal() {
                               searchHits={searchHits}
                               remarksVersion={remarksVersions[trade.id] ?? 0}
                               thumbsVersion={thumbsVersions[trade.id] ?? 0}
+                              evaluation={evaluation}
                             />
                           )}
                         />

@@ -2,7 +2,8 @@ import { useRef, useState, useCallback, useEffect, useMemo, lazy, Suspense } fro
 import { useLenis } from '../hooks/useLenis.js';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { getTradeById, DAYS } from '../data/trades.js';
-import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, normalizeRichTextHtml, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls, getExtraWeeks } from '../data/storage.js';
+import { resolveImg, getStoredImgAsync, resolveMediumAsync, getImageMeta, formatBytes, preloadNeighbourImages, setStoredImg, fileToDataUrl, getNotes, setNotes, normalizeRichTextHtml, getTags, setTags, getTradeDate, setTradeDate, getAnnotations, setAnnotations, getRuleScores, setRuleScores, getParameters, setParameters, flushAllWeekDocs, flushWeekDoc, evictDetailImageUrls, getExtraWeeks } from '../data/storage.js';
+import { scoreParamMap, scoreVerdict } from '../data/rules.js';
 import { exportChartPng } from '../data/exportChart.js';
 
 // The Quill editor (~200KB) loads only when the notes section is needed
@@ -1127,6 +1128,119 @@ export default function TradeDetail() {
     }
   }, [weekId, dayName, trade]);
 
+  /* ── Rule check (adherence point system) ──
+     One score per parameter for this day: followed (+points), broke
+     (−points), N/A (no score). Stored per week+day like tags. The
+     parameter set itself is the user's own list (see below). */
+  const [ruleScores, setRuleScoresState] = useState({});
+  useEffect(() => {
+    if (trade) {
+      setRuleScoresState(getRuleScores(weekId, dayName));
+    }
+  }, [weekId, dayName, trade]);
+  const setRuleScore = useCallback((ruleId, value) => {
+    const next = { ...ruleScores };
+    if (value === 0) delete next[ruleId];
+    else next[ruleId] = value;
+    setRuleScoresState(next);
+    setRuleScores(weekId, dayName, next);
+  }, [weekId, dayName, ruleScores]);
+
+  /* ── Notes / Evaluation flip ──
+     The notes section has two faces that never mix: the notes editor,
+     and the parameter set that values the day. The Notes/Evaluation
+     switch in the header flips between them. */
+  const [notesView, setNotesView] = useState('notes');
+  const [evalParams, setEvalParams] = useState(() => getParameters());
+  const addParameter = useCallback(async (name, points) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    const param = {
+      id: `param-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      short: trimmed.slice(0, 12),
+      label: trimmed,
+      points: Math.max(1, Math.min(99, Number(points) || 1)),
+    };
+    const next = [...evalParams, param];
+    setEvalParams(next);
+    await setParameters(next);
+  }, [evalParams]);
+  const deleteParameter = useCallback(async (paramId) => {
+    const next = evalParams.filter((p) => p.id !== paramId);
+    setEvalParams(next);
+    await setParameters(next);
+  }, [evalParams]);
+  const setParameterPoints = useCallback(async (paramId, points) => {
+    const pts = Math.max(1, Math.min(99, Number(points) || 1));
+    const next = evalParams.map((p) => (p.id === paramId ? { ...p, points: pts } : p));
+    setEvalParams(next);
+    await setParameters(next);
+  }, [evalParams]);
+  const [newParamName, setNewParamName] = useState('');
+  const [newParamPoints, setNewParamPoints] = useState('1');
+  const addCurrentParameter = () => {
+    addParameter(newParamName, newParamPoints);
+    setNewParamName('');
+    setNewParamPoints('1');
+  };
+  const ruleSummary = scoreParamMap(evalParams, ruleScores);
+  const ruleVerdict = scoreVerdict(evalParams, ruleScores);
+
+  /* ── Parameter add / right-click menu / inline edit ──
+     The add row hides behind a '+' button above the panel; a parameter
+     is edited or deleted from a right-click menu (Edit / Delete) — the
+     × on each row is gone. Edit turns the row into the add-row form
+     with that parameter's name and points filled, cursor at the end. */
+  const [addOpen, setAddOpen] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState(null); // { paramId, x, y } in eval-face coords
+  const [editingParamId, setEditingParamId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editPoints, setEditPoints] = useState('1');
+  const evalFaceRef = useRef(null);
+  const ctxMenuRef = useRef(null);
+  const openParamMenu = useCallback((e, paramId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = evalFaceRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width - 160));
+    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height - 120));
+    setCtxMenu({ paramId, x, y });
+  }, []);
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDown = (e) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target)) setCtxMenu(null);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setCtxMenu(null); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [ctxMenu]);
+  const startEditParameter = (param) => {
+    setCtxMenu(null);
+    setEditingParamId(param.id);
+    setEditName(param.label);
+    setEditPoints(String(param.points));
+  };
+  const saveEditParameter = useCallback(async () => {
+    const trimmed = (editName || '').trim();
+    if (!trimmed || !editingParamId) return;
+    const pts = Math.max(1, Math.min(99, Number(editPoints) || 1));
+    const next = evalParams.map((p) => (p.id === editingParamId ? { ...p, label: trimmed, short: trimmed.slice(0, 12), points: pts } : p));
+    setEvalParams(next);
+    await setParameters(next);
+    setEditingParamId(null);
+  }, [editName, editPoints, editingParamId, evalParams]);
+  const cancelEditParameter = useCallback(() => setEditingParamId(null), []);
+  // Focus once when the edit form mounts, cursor at the end of the filled name.
+  const focusEditName = useCallback((el) => {
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }, []);
+
   // Lazy editor mount (perf step 8): the notes section starts as a
   // read-only placeholder; the real Quill editor mounts when the section
   // scrolls into view (200px early, so it is ready by the time the user
@@ -1723,6 +1837,23 @@ export default function TradeDetail() {
                 </span>
               </div>
             </div>
+            {/* Notes / Evaluation switch — same flip control as the front page */}
+            <div className="flex items-center bg-black border border-black rounded-full p-0.5 shrink-0" data-testid="notes-view-toggle">
+              <button
+                onClick={() => setNotesView('notes')}
+                data-testid="notes-view-notes-btn"
+                className={`text-[12px] font-bold rounded-full px-3 py-1.5 ${notesView === 'notes' ? 'bg-white text-black' : 'text-white/60'}`}
+              >
+                Notes
+              </button>
+              <button
+                onClick={() => setNotesView('evaluation')}
+                data-testid="notes-view-evaluation-btn"
+                className={`text-[12px] font-bold rounded-full px-3 py-1.5 ${notesView === 'evaluation' ? 'bg-white text-black' : 'text-white/60'}`}
+              >
+                Evaluation
+              </button>
+            </div>
           </div>
           
           {/* Tags */}
@@ -1917,12 +2048,15 @@ export default function TradeDetail() {
         <section
           ref={notesSectionRef}
           className="w-full flex-1 flex flex-col mb-8"
+          style={{ perspective: '1200px' }}
           onDragOver={(e) => {
+            if (notesView === 'evaluation') return;
             if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
               e.preventDefault();
             }
           }}
           onDrop={async (e) => {
+            if (notesView === 'evaluation') return;
             const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
             if (file) {
               e.preventDefault();
@@ -1939,13 +2073,168 @@ export default function TradeDetail() {
             }
           }}
         >
-          {editorMounted ? (
-            <Suspense fallback={<NotesPlaceholder value={notesContent} onMount={() => mountEditor(true)} />}>
-              <NotesEditor quillRef={quillRef} value={notesContent} onChange={persistNotes} autoFocus={editorAutoFocus} />
-            </Suspense>
-          ) : (
-            <NotesPlaceholder value={notesContent} onMount={() => mountEditor(true)} />
-          )}
+          {/* Notes / Evaluation flip: both faces share one grid
+              cell, so the wrapper's height is the taller of the two and
+              neither face is ever clipped — the notes face sets it here,
+              the panel sets it if the parameter list grows longer. */}
+          <div className="relative w-full flex-1 grid" style={{ transformStyle: 'preserve-3d', transform: notesView === 'evaluation' ? 'rotateY(180deg)' : 'rotateY(0deg)', transition: 'transform 0.6s ease' }}>
+            {/* Notes face */}
+            <div className="col-start-1 row-start-1 w-full flex flex-col" style={{ backfaceVisibility: 'hidden' }}>
+              {editorMounted ? (
+                <Suspense fallback={<NotesPlaceholder value={notesContent} onMount={() => mountEditor(true)} />}>
+                  <NotesEditor quillRef={quillRef} value={notesContent} onChange={persistNotes} autoFocus={editorAutoFocus} />
+                </Suspense>
+              ) : (
+                <NotesPlaceholder value={notesContent} onMount={() => mountEditor(true)} />
+              )}
+            </div>
+            {/* Evaluation face: the parameter set that values the day */}
+            <div ref={evalFaceRef} className="col-start-1 row-start-1 overflow-y-auto" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+              {/* Add-parameter '+' — matte black, white thick +, above the Evaluation line, right margin */}
+              <div className="flex justify-end mb-2">
+                <button
+                  onClick={() => setAddOpen((v) => !v)}
+                  data-testid="param-add-toggle-btn"
+                  title="Add a parameter"
+                  className="w-9 h-9 rounded-full bg-black border border-[#424242] text-white text-[20px] font-bold leading-none flex items-center justify-center hover:bg-[#1a1a1a]"
+                >
+                  +
+                </button>
+              </div>
+              <div data-testid="eval-panel" className="w-full rounded-xl border border-[#424242] bg-[#212121] px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-bold text-white text-[14px]">Evaluation</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-[11px] font-label-md text-white/50">
+                      {ruleSummary.followed} followed · {ruleSummary.broke} broke · {ruleSummary.na} n/a
+                    </span>
+                    <span
+                      data-testid="rule-check-total"
+                      className={`text-[13px] font-bold rounded-full px-2.5 py-0.5 tabular-nums ${ruleVerdict === 'positive' ? 'bg-[#22c55e] text-black' : ruleVerdict === 'negative' ? 'bg-[#ef4444] text-white' : 'bg-[#2f2f2f] text-white'}`}
+                    >
+                      {ruleSummary.total > 0 ? `+${ruleSummary.total}` : `${ruleSummary.total}`}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {evalParams.map((param) => {
+                    const v = ruleScores[param.id] ?? 0;
+                    if (editingParamId === param.id) {
+                      return (
+                        <div key={param.id} className="flex items-center gap-2" data-testid={`param-edit-${param.id}`}>
+                          <input
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') saveEditParameter(); else if (e.key === 'Escape') cancelEditParameter(); }}
+                            ref={focusEditName}
+                            data-testid="param-edit-name"
+                            className="flex-1 bg-black border border-[#424242] rounded-full px-3 py-1.5 text-[12px] font-bold text-white placeholder:text-white/40 focus:outline-none"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            value={editPoints}
+                            onChange={(e) => setEditPoints(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') saveEditParameter(); else if (e.key === 'Escape') cancelEditParameter(); }}
+                            data-testid="param-edit-points"
+                            title="Points"
+                            className="w-16 bg-black border border-[#424242] rounded-full px-2 py-1.5 text-[12px] font-bold text-white text-center focus:outline-none"
+                          />
+                          <button onClick={saveEditParameter} data-testid="param-edit-save" className="bg-white text-black text-[12px] font-bold rounded-full px-3 py-1.5">Save</button>
+                          <button onClick={cancelEditParameter} data-testid="param-edit-cancel" className="bg-black text-white/60 border border-[#424242] text-[12px] font-bold rounded-full px-3 py-1.5">Cancel</button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={param.id} data-testid={`param-row-${param.id}`} onContextMenu={(e) => openParamMenu(e, param.id)} className="flex items-center justify-between gap-3">
+                        <span className="font-bold text-white text-[13px]">{param.label}</span>
+                        <span className="flex items-center gap-1 shrink-0" data-testid={`param-${param.id}`}>
+                          <span className="flex items-center gap-1 mr-1">
+                            <input
+                              type="number"
+                              min={1}
+                              max={99}
+                              value={param.points}
+                              onChange={(e) => setParameterPoints(param.id, e.target.value)}
+                              data-testid={`param-points-${param.id}`}
+                              title="Points for this parameter"
+                              className="w-12 bg-black border border-[#424242] rounded-full px-2 py-1 text-[11px] font-bold text-white text-center focus:outline-none"
+                            />
+                            <span className="text-[11px] text-white/50">pts</span>
+                          </span>
+                          <button
+                            onClick={() => setRuleScore(param.id, 1)}
+                            className={`text-[11px] font-bold rounded-full px-2 py-1 border ${v === 1 ? 'bg-white text-black border-white' : 'bg-black text-white/60 border-[#424242]'}`}
+                          >
+                            Followed +{param.points}
+                          </button>
+                          <button
+                            onClick={() => setRuleScore(param.id, -1)}
+                            className={`text-[11px] font-bold rounded-full px-2 py-1 border ${v === -1 ? 'bg-white text-black border-white' : 'bg-black text-white/60 border-[#424242]'}`}
+                          >
+                            Broke −{param.points}
+                          </button>
+                          <button
+                            onClick={() => setRuleScore(param.id, 0)}
+                            className={`text-[11px] font-bold rounded-full px-2 py-1 border ${v === 0 ? 'bg-white text-black border-white' : 'bg-black text-white/60 border-[#424242]'}`}
+                          >
+                            N/A
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Add a parameter — opens under the list from the '+' button above */}
+                {addOpen && (
+                <div className="flex items-center gap-2 mt-3" data-testid="param-add-row">
+                  <input
+                    type="text"
+                    placeholder="Add parameter..."
+                    value={newParamName}
+                    onChange={(e) => setNewParamName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') addCurrentParameter(); }}
+                    data-testid="param-add-name"
+                    className="flex-1 bg-black border border-[#424242] rounded-full px-3 py-1.5 text-[12px] font-bold text-white placeholder:text-white/40 focus:outline-none"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={99}
+                    value={newParamPoints}
+                    onChange={(e) => setNewParamPoints(e.target.value)}
+                    data-testid="param-add-points"
+                    title="Points"
+                    className="w-16 bg-black border border-[#424242] rounded-full px-2 py-1.5 text-[12px] font-bold text-white text-center focus:outline-none"
+                  />
+                  <button onClick={addCurrentParameter} data-testid="param-add-btn" className="bg-white text-black text-[12px] font-bold rounded-full px-3 py-1.5">Add</button>
+                </div>
+                )}
+                <p className="text-[11px] text-white/40 mt-2">Right-click a parameter to edit or delete.</p>
+              </div>
+              {/* Right-click menu — Edit / Delete for one parameter */}
+              {ctxMenu && (
+                <div ref={ctxMenuRef} data-testid="param-ctx-menu" className="absolute z-50 bg-black border border-[#424242] rounded-lg p-1.5 flex flex-col gap-1 shadow-lg" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+                  <button
+                    onClick={() => { const p = evalParams.find((q) => q.id === ctxMenu.paramId); if (p) startEditParameter(p); }}
+                    data-testid="param-ctx-edit"
+                    className="text-[12px] font-bold text-white rounded-full px-3 py-1.5 border border-[#424242] hover:bg-[#2f2f2f] text-left"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => { deleteParameter(ctxMenu.paramId); setCtxMenu(null); }}
+                    data-testid="param-ctx-delete"
+                    className="text-[12px] font-bold text-white rounded-full px-3 py-1.5 border border-[#424242] hover:bg-[#2f2f2f] text-left"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </section>
       </main>
 

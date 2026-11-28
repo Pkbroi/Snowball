@@ -1,5 +1,6 @@
 import { get, set, del, keys, entries, clear } from 'idb-keyval';
 import { dataURLtoBlob, parseBackup } from './backupParse.js';
+import { DEFAULT_PARAMS } from './rules.js';
 
 /**
  * Snowball persistence helpers using idb-keyval (IndexedDB)
@@ -250,7 +251,7 @@ export const THUMB_MAX_DIM = 480;
  * requests, batched 8 at a time). Now one dataset-week's small metadata
  * lives in ONE document under a single key:
  *   sb_ds_<id>__wk_<weekId> = { v: 1, label?, remarks?,
- *     days: { Monday: { notes?, tags?, meta?, date? }, … } }
+ *     days: { Monday: { notes?, tags?, meta?, date?, rules? }, … } }
  * Images (img_/thumb_/med_) stay per-key Blobs, annotations (ann_) stay
  * per-key arrays, and extra_weeks stays its own key — this only covers
  * the small text metadata that used to be hundreds of keys.
@@ -277,6 +278,7 @@ const fanOutWeekDoc = (weekId, doc) => {
     if (d.tags != null) memCache.set(tagsKey(weekId, day), d.tags);
     if (d.meta != null) memCache.set(metaKey(weekId, day), d.meta);
     if (d.date != null) memCache.set(dateKey(weekId, day), d.date);
+    if (d.rules != null) memCache.set(rulesKey(weekId, day), d.rules);
   }
 };
 
@@ -299,6 +301,8 @@ const buildWeekDoc = (weekId) => {
     if (meta != null) d.meta = meta;
     const date = memCache.get(dateKey(weekId, day));
     if (date != null) d.date = date;
+    const rules = memCache.get(rulesKey(weekId, day));
+    if (rules != null) d.rules = rules;
     if (Object.keys(d).length > 0) days[day] = d;
   }
   if (Object.keys(days).length > 0) doc.days = days;
@@ -1510,6 +1514,35 @@ export const getNotesText = (weekId, dayName, fallback = '') => {
   const html = getNotes(weekId, dayName) ?? fallback;
   if (!html) return '';
   return decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+};
+
+/* ─── Rule-adherence scores (per day) ───
+   One map per day: { [ruleId]: 1 | -1 } — followed (+1) or broke (−1);
+   a missing key means N/A. Stored like tags (memCache + week document),
+   so backup/export picks the key up automatically (sb_ds_ prefix).
+   The rule list itself lives in src/data/rules.js. */
+const rulesKey = (weekId, dayName) => `${dsPrefix()}rules_${weekId}_${dayName}`;
+export const getRuleScores = (weekId, dayName) => memCache.get(rulesKey(weekId, dayName)) ?? {};
+export const setRuleScores = (weekId, dayName, scores) => {
+  const answered = scores ? Object.values(scores).filter((v) => v === 1 || v === -1).length : 0;
+  if (answered > 0) {
+    memCache.set(rulesKey(weekId, dayName), scores);
+  } else {
+    memCache.delete(rulesKey(weekId, dayName));
+  }
+  scheduleWeekSave(weekId); // scores live in the week document now
+};
+
+/* ─── Evaluation parameters (the user's own list, one set per dataset) ───
+   The parameter set is global, not per-day: [{ id, short, label, points }].
+   Stored directly (annotations pattern), not in the week document.
+   Absent → the six draft defaults; an explicitly empty list stays empty,
+   so deleting every parameter is a real (persisted) choice, not a reset. */
+const paramsKey = () => `${dsPrefix()}eval_params`;
+export const getParameters = () => memCache.get(paramsKey()) ?? DEFAULT_PARAMS;
+export const setParameters = async (params) => {
+  memCache.set(paramsKey(), params);
+  await set(paramsKey(), params);
 };
 
 /* ─── Trade Tags (Array of strings) ─── */
