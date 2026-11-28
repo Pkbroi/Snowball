@@ -1179,9 +1179,11 @@ export default function TradeDetail() {
   const [newParamName, setNewParamName] = useState('');
   const [newParamPoints, setNewParamPoints] = useState('1');
   const addCurrentParameter = () => {
+    if (!newParamName.trim()) return;
     addParameter(newParamName, newParamPoints);
     setNewParamName('');
     setNewParamPoints('1');
+    setAddOpen(false); // the add line goes away after adding; '+' opens it again
   };
   const ruleSummary = scoreParamMap(evalParams, ruleScores);
   const ruleVerdict = scoreVerdict(evalParams, ruleScores);

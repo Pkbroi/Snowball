@@ -18,7 +18,11 @@ test.describe('Index / Year datasets', () => {
     const zoomBox = await page.getByTestId('zoom-out-btn').boundingBox();
     expect(selectorBox.x).toBeGreaterThan(searchBox.x + searchBox.width);
     expect(selectorBox.x + selectorBox.width).toBeLessThanOrEqual(zoomBox.x);
-    await expect(page.getByTestId('add-dataset-btn')).toBeVisible();
+    // Adding goes through the index list now: '+ New' is its last line,
+    // and the header '+' button is gone.
+    const indexOptions = await page.getByTestId('dataset-index-select').locator('option').allTextContents();
+    expect(indexOptions[indexOptions.length - 1]).toBe('+ New');
+    await expect(page.getByTestId('add-dataset-btn')).toHaveCount(0);
   });
 
   test('adding a week, switching dataset, and switching back keeps each dataset separate', async ({ page }) => {
@@ -26,8 +30,8 @@ test.describe('Index / Year datasets', () => {
     const row = page.locator('div[data-testid^="week-row-week-custom-"]').first();
     await expect(row).toBeVisible();
 
-    // Create Bank Nifty / 2026 via the + button next to the selectors.
-    await page.getByTestId('add-dataset-btn').click();
+    // Create Bank Nifty / 2026 via '+ New' at the end of the index list.
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
     await page.getByTestId('add-dataset-year-input').fill('2026');
     await page.getByTestId('add-dataset-submit').click();
@@ -55,7 +59,7 @@ test.describe('Index / Year datasets', () => {
     await page.getByTestId('add-week-btn').click();
     await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
 
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Nifty 50');
     await page.getByTestId('add-dataset-year-input').fill('2025');
     await page.getByTestId('add-dataset-submit').click();
@@ -78,7 +82,7 @@ test.describe('Index / Year datasets', () => {
     for (let i = 0; i < 6; i++) await page.getByTestId('add-week-btn').click();
     await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(6);
 
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
     await page.getByTestId('add-dataset-year-input').fill('2026');
     await page.getByTestId('add-dataset-submit').click();
@@ -101,7 +105,7 @@ test.describe('Index / Year datasets', () => {
   });
 
   test('adding an existing combination just switches to it', async ({ page }) => {
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Nifty 50');
     await page.getByTestId('add-dataset-year-input').fill('2026');
     await page.getByTestId('add-dataset-submit').click();

@@ -985,11 +985,11 @@ function AddDatasetModal({ onClose, onCreated }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
-      <form onSubmit={handleSubmit} className="bg-surface-container-high rounded-xl p-6 w-[340px] shadow-2xl flex flex-col gap-4 animate-expand">
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+      <form onSubmit={handleSubmit} className="bg-surface-container-high border border-[#424242] rounded-xl p-6 w-[340px] shadow-2xl flex flex-col gap-4 animate-expand">
         <div className="flex justify-between items-center">
           <h2 className="font-headline-sm text-on-surface font-bold">Add index / year</h2>
-          <button type="button" onClick={onClose} disabled={saving} className="text-on-surface-variant hover:text-on-surface transition-colors p-1 rounded-full hover:bg-surface-bright disabled:opacity-30">
+          <button type="button" onClick={onClose} disabled={saving} className="bg-black text-white hover:bg-[#1a1a1a] transition-colors p-1.5 rounded-full disabled:opacity-30">
             <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
@@ -1028,7 +1028,7 @@ function AddDatasetModal({ onClose, onCreated }) {
           type="submit"
           data-testid="add-dataset-submit"
           disabled={saving}
-          className="w-full py-2 bg-white text-black rounded-full font-label-md hover:opacity-90 transition-opacity disabled:opacity-50"
+          className="w-full py-2 bg-black text-white rounded-full font-label-md font-bold hover:bg-[#1a1a1a] transition-colors disabled:opacity-50"
         >
           {saving ? 'Adding…' : 'Add dataset'}
         </button>
@@ -1701,6 +1701,7 @@ export default function WeeklyJournal() {
                   disabled={switchingDataset}
                   onChange={(e) => {
                     const idx = e.target.value;
+                    if (idx === '__add_new__') { setShowAddDataset(true); return; }
                     const years = datasets.filter((d) => d.index === idx).map((d) => d.year);
                     handleSwitchDataset(datasetIdFor(idx, Math.max(...years)));
                   }}
@@ -1709,6 +1710,7 @@ export default function WeeklyJournal() {
                   {[...new Set(datasets.map((d) => d.index))].map((idx) => (
                     <option key={idx} value={idx}>{idx}</option>
                   ))}
+                  <option value="__add_new__">+ New</option>
                 </select>
                 <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-white pointer-events-none">expand_more</span>
               </div>
@@ -1727,16 +1729,6 @@ export default function WeeklyJournal() {
                 </select>
                 <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-white pointer-events-none">expand_more</span>
               </div>
-              <button
-                onClick={() => setShowAddDataset(true)}
-                data-testid="add-dataset-btn"
-                aria-label="Add index or year"
-                title="Add index / year"
-                className="flex items-center justify-center w-8 h-8 rounded-full border border-black bg-black text-white hover:bg-[#1a1a1a] transition-colors shrink-0"
-                style={{ fontSize: '18px', fontWeight: 700, lineHeight: 1 }}
-              >
-                +
-              </button>
             </div>
 
             {/* Right: zoom + add-row + settings */}

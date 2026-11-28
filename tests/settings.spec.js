@@ -75,7 +75,7 @@ test.describe('Settings panel (top-right, app theme)', () => {
   test('confirming wipe empties only the current Index × Year', async ({ page }) => {
     // A week in Nifty 50 / 2026 and a week in Bank Nifty / 2026.
     await page.getByTestId('add-week-btn').click();
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
     await page.getByTestId('add-dataset-year-input').fill('2026');
     await page.getByTestId('add-dataset-submit').click();
@@ -98,12 +98,12 @@ test.describe('Settings panel (top-right, app theme)', () => {
   test('confirming delete removes the whole index, every year, and lands on a remaining dataset', async ({ page }) => {
     // Nifty 50 / 2026 and Nifty 50 / 2025 both hold a week; Bank Nifty / 2026 holds one too.
     await page.getByTestId('add-week-btn').click();
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Nifty 50');
     await page.getByTestId('add-dataset-year-input').fill('2025');
     await page.getByTestId('add-dataset-submit').click();
     await page.getByTestId('add-week-btn').click();
-    await page.getByTestId('add-dataset-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
     await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
     await page.getByTestId('add-dataset-year-input').fill('2026');
     await page.getByTestId('add-dataset-submit').click();

@@ -119,7 +119,7 @@ test('parameters are global, default to N/A, and can be edited and deleted', asy
   await page.getByTestId('param-add-points').fill('2');
   await page.getByTestId('param-add-btn').click();
   await expect(page.getByText('No FOMO trade')).toBeVisible({ timeout: 5000 });
-  await page.getByTestId('param-add-toggle-btn').click();
+  // The add line closes itself after adding; '+' reopens it for the next one.
   await expect(page.getByTestId('param-add-row')).toHaveCount(0);
 
   // Next day (day-arrow path): the parameter is there, N/A selected.

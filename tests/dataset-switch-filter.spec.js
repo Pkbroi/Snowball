@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 // search re-applied to the new dataset within 100ms), and the date
 // filter was never reset. handleSwitchDataset must clear both.
 async function createBankNifty(page) {
-  await page.getByTestId('add-dataset-btn').click();
+  await page.getByTestId('dataset-index-select').selectOption('__add_new__');
   await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
   await page.getByTestId('add-dataset-year-input').fill('2026');
   await page.getByTestId('add-dataset-submit').click();
