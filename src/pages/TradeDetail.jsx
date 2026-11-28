@@ -1858,26 +1858,6 @@ export default function TradeDetail() {
             </div>
           </div>
           
-          {/* Tags */}
-          <div className="flex items-center gap-2 flex-wrap text-sm">
-            {tags.map(tag => (
-              <span key={tag} className="flex items-center gap-1 bg-[#000000] text-white font-bold border border-[#424242] px-2 py-0.5 rounded-md text-[12px]">
-                {tag}
-                <button onClick={() => removeTag(tag)} className="text-white/60 hover:text-white mt-0.5">
-                  <span className="material-symbols-outlined text-[12px]">close</span>
-                </button>
-              </span>
-            ))}
-            <input
-              type="text"
-              placeholder="Add tag..."
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={addTag}
-              className="bg-transparent border-none p-0 text-[12px] text-white font-bold focus:outline-none focus:ring-0 placeholder-on-surface-variant w-24"
-            />
-          </div>
-
           <div className="border-t border-outline-variant" />
         </div>
 
@@ -2045,6 +2025,26 @@ export default function TradeDetail() {
             </span>
           </div>
         )}
+
+        {/* Tags — under the chart, on top of the notes section */}
+        <div className="flex items-center gap-2 flex-wrap text-sm" data-testid="tags-row">
+          {tags.map(tag => (
+            <span key={tag} className="flex items-center gap-1 bg-[#000000] text-white font-bold border border-[#424242] px-2 py-0.5 rounded-md text-[12px]">
+              {tag}
+              <button onClick={() => removeTag(tag)} className="text-white/60 hover:text-white mt-0.5">
+                <span className="material-symbols-outlined text-[12px]">close</span>
+              </button>
+            </span>
+          ))}
+          <input
+            type="text"
+            placeholder="Add tag..."
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={addTag}
+            className="bg-transparent border-none p-0 text-[12px] text-white font-bold focus:outline-none focus:ring-0 placeholder-on-surface-variant w-24"
+          />
+        </div>
 
         {/* ── Notes / freewrite area (seamless blank space, no rectangle) ── */}
         <section
