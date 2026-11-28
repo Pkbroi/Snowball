@@ -1139,8 +1139,16 @@ export default function WeeklyJournal() {
 
   // Charts vs Evaluation view: 'charts' keeps the current grid;
   // 'evaluation' flips every day cell to its rule-check report.
-  const [viewMode, setViewMode] = useState('charts');
+  // Persisted in sessionStorage (same pattern as sb_zoom): the journal
+  // remounts when the user comes back from a cell, and a plain useState
+  // default would reset the mode to Charts on every return trip.
+  const [viewMode, setViewMode] = useState(() =>
+    sessionStorage.getItem('sb_view_mode') === 'evaluation' ? 'evaluation' : 'charts',
+  );
   const evaluation = viewMode === 'evaluation';
+  useEffect(() => {
+    sessionStorage.setItem('sb_view_mode', viewMode);
+  }, [viewMode]);
   // True only until the first mount commits: a zoom change remounts
   // Virtuoso (key={tableZoom} below) and must NOT re-apply
   // initialTopMostItemIndex, or the list would jump back to the top.
