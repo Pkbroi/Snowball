@@ -1857,6 +1857,45 @@ export const formatDatabase = async () => {
 };
 
 /**
+ * Delete one (index, year) combination with all its data, keeping the
+ * other years of the same index intact. Removes the dataset's namespaced
+ * keys and drops it from the registry. The journal lands on the same
+ * index's latest remaining year when one exists, else the first remaining
+ * dataset; if none remains, a fresh empty default dataset (Nifty 50 /
+ * 2026) is created so the app always has a journal to open.
+ * Returns the dataset the journal lands on.
+ */
+export const deleteDataset = async (id) => {
+  const datasets = getDatasets();
+  const doomed = datasets.find((d) => d.id === id);
+  if (!doomed) throw new Error(`Unknown dataset: ${id}`);
+  // Flush first: a queued week-document save would otherwise run after
+  // the wipe and resurrect its document.
+  await flushAllWeekDocs();
+  const p = `sb_ds_${id}__`;
+  const allKeys = await keys();
+  await runBatched(
+    allKeys.filter((k) => typeof k === 'string' && k.startsWith(p)),
+    (k) => del(k), 16,
+  );
+  let remaining = datasets.filter((d) => d.id !== id);
+  if (remaining.length === 0) remaining = [DEFAULT_DATASET];
+  await set('sb_datasets', remaining);
+  const sameIndex = remaining
+    .filter((d) => d.index === doomed.index)
+    .sort((a, b) => b.year - a.year);
+  const nextCurrent = id === currentDatasetId
+    ? (sameIndex[0] ?? remaining[0]).id
+    : currentDatasetId;
+  currentDatasetId = nextCurrent;
+  await set('sb_current_dataset', nextCurrent);
+  revokeAllThumbUrls();
+  memCache.clear();
+  await initStorage();
+  return getCurrentDataset();
+};
+
+/**
  * Delete an entire index with all its data, every year.
  * Removes every dataset whose index matches (all years), deletes all
  * their namespaced keys, and drops them from the registry. If the

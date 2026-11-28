@@ -21,8 +21,8 @@ test.describe('Settings panel (top-right, app theme)', () => {
     expect(viewport.width - (box.x + box.width)).toBeLessThanOrEqual(20);
     // A floating panel, not a full page: narrower than the viewport, journal still visible.
     expect(box.width).toBeLessThanOrEqual(400);
-    // Compact: tightened spacing keeps the panel ~516px tall at a 720px viewport (was ~590px).
-    expect(box.height).toBeLessThanOrEqual(540);
+    // Compact: tightened spacing keeps the panel ~570px tall at a 720px viewport (was ~590px before the tightening, ~516px with two Format options; the third Format option adds ~54px).
+    expect(box.height).toBeLessThanOrEqual(600);
     await expect(page.getByTestId('search-input')).toBeVisible();
     await expect(page.getByTestId('dataset-selector')).toBeVisible();
     // App theme: pure black panel, bold white heading.
@@ -33,14 +33,18 @@ test.describe('Settings panel (top-right, app theme)', () => {
     await expect(heading).toHaveCSS('font-weight', '700');
   });
 
-  test('Format offers two options: wipe this Index × Year, or delete the whole index', async ({ page }) => {
+  test('Format offers three options: wipe this Index × Year, delete this Index × Year, or delete the whole index', async ({ page }) => {
     await openSettings(page);
     await expect(page.getByTestId('format-wipe-btn')).toContainText('Wipe Nifty 50 · 2026');
     await expect(page.getByTestId('format-wipe-btn')).toContainText('Wipe this Index × Year only');
+    await expect(page.getByTestId('format-delete-dataset-btn')).toContainText('Delete Nifty 50 · 2026');
+    await expect(page.getByTestId('format-delete-dataset-btn')).toContainText('Delete this Index × Year only');
     await expect(page.getByTestId('format-delete-btn')).toContainText('Delete Nifty 50 — all years');
     await expect(page.getByTestId('format-delete-btn')).toContainText('Delete this index with all its data');
     // Deep red warning icons, not the old pale rose.
     await expect(page.getByTestId('format-wipe-btn').locator('.material-symbols-outlined'))
+      .toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(page.getByTestId('format-delete-dataset-btn').locator('.material-symbols-outlined'))
       .toHaveCSS('color', 'rgb(220, 38, 38)');
   });
 
@@ -58,6 +62,7 @@ test.describe('Settings panel (top-right, app theme)', () => {
     await page.getByTestId('format-confirm-cancel').click();
     await expect(confirm).toBeHidden();
     await expect(page.getByTestId('format-wipe-btn')).toBeVisible();
+    await expect(page.getByTestId('format-delete-dataset-btn')).toBeVisible();
     await expect(page.getByTestId('format-delete-btn')).toBeVisible();
   });
 
@@ -126,6 +131,59 @@ test.describe('Settings panel (top-right, app theme)', () => {
     await expect(page.getByTestId('dataset-index-select').locator('option', { hasText: 'Bank Nifty' })).toHaveCount(1);
     await expect(page.getByTestId('dataset-index-select')).toHaveValue('Bank Nifty');
     await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
+  });
+
+  test('confirming delete removes only the current Index × Year and lands on the same index\'s latest year', async ({ page }) => {
+    // Nifty 50 / 2026 and Nifty 50 / 2025 both hold a week; Bank Nifty / 2026 holds one too.
+    await page.getByTestId('add-week-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
+    await page.getByTestId('add-dataset-index-input').fill('Nifty 50');
+    await page.getByTestId('add-dataset-year-input').fill('2025');
+    await page.getByTestId('add-dataset-submit').click();
+    await page.getByTestId('add-week-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('__add_new__');
+    await page.getByTestId('add-dataset-index-input').fill('Bank Nifty');
+    await page.getByTestId('add-dataset-year-input').fill('2026');
+    await page.getByTestId('add-dataset-submit').click();
+    await page.getByTestId('add-week-btn').click();
+    await page.getByTestId('dataset-index-select').selectOption('Nifty 50');
+    await expect(page.getByTestId('dataset-year-select')).toHaveValue('2026');
+    // Switch to 2025 so it is the loaded combination being deleted.
+    await page.getByTestId('dataset-year-select').selectOption('2025');
+    await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
+
+    await openSettings(page);
+    await page.getByTestId('format-delete-dataset-btn').click();
+    const confirm = page.getByTestId('format-confirm');
+    await expect(page.getByTestId('format-confirm-title')).toHaveText('Delete Nifty 50 · 2025');
+    await expect(confirm).toContainText('Other years of Nifty 50 are untouched');
+    await expect(confirm).toContainText('cannot be undone');
+    await page.getByTestId('format-confirm-ok').click();
+    await page.waitForLoadState('load');
+
+    // 2025 is gone from the year list; the journal lands on Nifty 50 / 2026, which kept its week.
+    // Auto-retrying assertions: a one-shot read can land mid-reload and throw.
+    await expect(page.getByTestId('dataset-index-select')).toHaveValue('Nifty 50');
+    await expect(page.getByTestId('dataset-year-select')).toHaveValue('2026');
+    await expect(page.getByTestId('dataset-year-select').locator('option', { hasText: '2025' })).toHaveCount(0);
+    await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
+    // Bank Nifty / 2026 untouched.
+    await page.getByTestId('dataset-index-select').selectOption('Bank Nifty');
+    await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
+  });
+
+  test('deleting the only Index × Year recreates a fresh empty default journal', async ({ page }) => {
+    await page.getByTestId('add-week-btn').click();
+    await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(1);
+
+    await openSettings(page);
+    await page.getByTestId('format-delete-dataset-btn').click();
+    await page.getByTestId('format-confirm-ok').click();
+    await page.waitForLoadState('load');
+
+    await expect(page.getByTestId('dataset-index-select')).toHaveValue('Nifty 50');
+    await expect(page.getByTestId('dataset-year-select')).toHaveValue('2026');
+    await expect(page.locator('div[data-testid^="week-row-week-custom-"]')).toHaveCount(0);
   });
 
   test('deleting the only index recreates a fresh empty default journal', async ({ page }) => {

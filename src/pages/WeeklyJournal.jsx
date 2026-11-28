@@ -14,7 +14,7 @@ import {
   getRemarks, setRemarks, getRemarksPreview,
   getWeekLabel, setWeekLabel,
   getExtraWeeks, setExtraWeeks, deleteWeekData,
-  exportDatabase, importDatabase, formatDatabase, deleteIndex, getTradeDate,
+  exportDatabase, importDatabase, formatDatabase, deleteDataset, deleteIndex, getTradeDate,
   getDatasets, getCurrentDataset, createDataset, switchDataset, datasetIdFor, datasetLabel,
   subscribeThumbs, resolveMediumAsync, getSearchIndex, flushWeekDoc, normalizeRichTextHtml,
   hasStoredThumb, hasThumbBlob, loadThumb, scheduleThumbEviction, cancelThumbEviction,
@@ -576,7 +576,7 @@ function SettingsModal({ onClose }) {
    */
   const [op, setOp] = useState({ status: 'idle', step: '', done: 0, total: 0 });
   const isBusy = op.status !== 'idle';
-  // confirm: null | 'wipe' | 'delete' — the in-panel data-loss confirmation step.
+  // confirm: null | 'wipe' | 'deleteDataset' | 'delete' — the in-panel data-loss confirmation step.
   const [confirm, setConfirm] = useState(null);
 
   useEffect(() => {
@@ -689,6 +689,20 @@ function SettingsModal({ onClose }) {
     }
   };
 
+  // Delete only the current (index, year) combination — other years of the index are untouched.
+  const handleDeleteDataset = async () => {
+    if (isBusy) return;
+    try {
+      setOp({ status: 'deleting', step: `Deleting ${datasetLabel(currentDs)}…`, done: 0, total: 0 });
+      await deleteDataset(currentDs.id);
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      setOp({ status: 'idle', step: '', done: 0, total: 0 });
+      alert('Failed to delete dataset.');
+    }
+  };
+
   const pct = op.total > 0 ? Math.round((op.done / op.total) * 100) : 0;
 
   return (
@@ -751,12 +765,14 @@ function SettingsModal({ onClose }) {
         {!isBusy && confirm && (
           <div data-testid="format-confirm" className="flex flex-col gap-3 py-1">
             <h3 data-testid="format-confirm-title" className="text-white font-bold text-[15px]">
-              {confirm === 'wipe' ? `Wipe ${datasetLabel(currentDs)}` : `Delete ${currentDs.index} — all years`}
+              {confirm === 'wipe' ? `Wipe ${datasetLabel(currentDs)}` : confirm === 'deleteDataset' ? `Delete ${datasetLabel(currentDs)}` : `Delete ${currentDs.index} — all years`}
             </h3>
             <p className="text-[#dc2626] font-bold text-[13px] leading-snug">
               {confirm === 'wipe'
                 ? `This will permanently wipe every week, remark and chart for ${datasetLabel(currentDs)} only. Other indexes and years are untouched. This cannot be undone.`
-                : `This will permanently delete ${currentDs.index} for every year — all weeks, remarks and charts. This cannot be undone.`}
+                : confirm === 'deleteDataset'
+                  ? `This will permanently delete ${datasetLabel(currentDs)} — all weeks, remarks and charts — and remove it from the list. Other years of ${currentDs.index} are untouched. This cannot be undone.`
+                  : `This will permanently delete ${currentDs.index} for every year — all weeks, remarks and charts. This cannot be undone.`}
             </p>
             <div className="flex gap-3">
               <button
@@ -768,10 +784,10 @@ function SettingsModal({ onClose }) {
               </button>
               <button
                 data-testid="format-confirm-ok"
-                onClick={confirm === 'wipe' ? handleWipe : handleDelete}
+                onClick={confirm === 'wipe' ? handleWipe : confirm === 'deleteDataset' ? handleDeleteDataset : handleDelete}
                 className="flex-1 py-2 bg-[#dc2626] hover:bg-[#b91c1c] rounded-lg text-white font-bold flex items-center justify-center transition-colors"
               >
-                {confirm === 'wipe' ? `Yes, wipe ${datasetLabel(currentDs)}` : `Yes, delete ${currentDs.index}`}
+                {confirm === 'wipe' ? `Yes, wipe ${datasetLabel(currentDs)}` : confirm === 'deleteDataset' ? `Yes, delete ${datasetLabel(currentDs)}` : `Yes, delete ${currentDs.index}`}
               </button>
             </div>
           </div>
@@ -831,6 +847,17 @@ function SettingsModal({ onClose }) {
                   <span className="flex flex-col items-start leading-tight">
                     <span>Wipe {datasetLabel(currentDs)}</span>
                     <span className="text-white/60 font-normal text-[12px]">Wipe this Index × Year only</span>
+                  </span>
+                </button>
+                <button
+                  data-testid="format-delete-dataset-btn"
+                  onClick={() => setConfirm('deleteDataset')}
+                  className="w-full py-1.5 px-3 bg-black hover:bg-[#1a1a1a] border border-[#424242] rounded-lg text-white font-bold flex items-center gap-2 transition-colors text-left"
+                >
+                  <span className="material-symbols-outlined text-[18px] text-[#dc2626]">warning</span>
+                  <span className="flex flex-col items-start leading-tight">
+                    <span>Delete {datasetLabel(currentDs)}</span>
+                    <span className="text-white/60 font-normal text-[12px]">Delete this Index × Year only</span>
                   </span>
                 </button>
                 <button
